@@ -30,13 +30,54 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-const allowedOrigins = [
-  process.env.FRONTEND_URL || "http://localhost:3002",
-  process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004",
-  process.env.ADMIN_DASHBOARD_URL || "http://localhost:3003",
-  "http://localhost:3000",
-  "http://localhost:3001",
-];
+// Parse ALLOWED_ORIGINS from environment variable (comma-separated)
+// Falls back to individual URL env vars for backward compatibility
+const parseAllowedOrigins = () => {
+  const origins = [];
+
+  // If ALLOWED_ORIGINS is set, use it (comma-separated list)
+  if (process.env.ALLOWED_ORIGINS) {
+    origins.push(
+      ...process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
+    );
+  } else {
+    // Fallback to individual URL environment variables
+    if (process.env.FRONTEND_URL) origins.push(process.env.FRONTEND_URL);
+    if (process.env.CUSTOMER_DASHBOARD_URL)
+      origins.push(process.env.CUSTOMER_DASHBOARD_URL);
+    if (process.env.ADMIN_DASHBOARD_URL)
+      origins.push(process.env.ADMIN_DASHBOARD_URL);
+  }
+
+  // Only add localhost defaults in development mode
+  // In production, origins must be explicitly configured
+  const isDevelopment = process.env.NODE_ENV !== "production";
+  if (origins.length === 0 && isDevelopment) {
+    console.warn(
+      "⚠️  No CORS origins configured. Using localhost defaults for development."
+    );
+    origins.push(
+      "http://localhost:3002", // Frontend
+      "http://localhost:3004", // Customer Dashboard
+      "http://localhost:3003", // Admin Dashboard
+      "http://localhost:3000",
+      "http://localhost:3001"
+    );
+  } else if (origins.length === 0 && !isDevelopment) {
+    throw new Error(
+      "❌ CORS origins must be configured in production. Please set ALLOWED_ORIGINS or individual URL environment variables."
+    );
+  }
+
+  return origins;
+};
+
+const allowedOrigins = parseAllowedOrigins();
+
+// Log allowed origins for debugging (only in development)
+if (process.env.NODE_ENV !== "production") {
+  console.log("🌐 Allowed CORS origins:", allowedOrigins);
+}
 
 app.use(
   cors({
