@@ -634,6 +634,26 @@ export const createPaymentSession = async (req, res) => {
       });
     }
 
+    // Check if user exists with this email (only for non-authenticated users)
+    // If user exists but isn't authenticated, redirect them to login
+    if (!req.user) {
+      const existingUser = await User.findOne({
+        email: email.trim().toLowerCase(),
+      });
+
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "An account with this email already exists. Please log in to your dashboard to complete payment.",
+          code: "USER_EXISTS",
+          redirectUrl: `${
+            process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3005"
+          }/login`,
+        });
+      }
+    }
+
     // Generate verification token BEFORE creating Stripe session (same flow as regular requests)
     const verificationToken = generateTokenService(
       email.trim(),
@@ -641,15 +661,26 @@ export const createPaymentSession = async (req, res) => {
       "verification"
     );
 
+    // Check if user is authenticated and verified (req.user is set by optionalAuth middleware)
+    // If authenticated and verified, redirect to managed service details page
+    // Otherwise, redirect to check-email page for verification
+    const isVerifiedUser = req.user && req.user.isVerified;
+
+    const successUrl = isVerifiedUser
+      ? `${
+          process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004"
+        }/managed-services/${requestId}?payment=success`
+      : `${
+          process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004"
+        }/check-email?email=${encodeURIComponent(email.trim())}`;
+
     // Create Stripe checkout session
     const sessionParams = {
       payment_method_types: ["card"],
       mode: "payment",
-      success_url: `${
-        process.env.FRONTEND_URL || "http://localhost:3002"
-      }/check-email?email=${encodeURIComponent(email.trim())}`,
+      success_url: successUrl,
       cancel_url: `${
-        process.env.FRONTEND_URL || "http://localhost:3002"
+        process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004"
       }/managed-services/payment/${requestId}?canceled=true`,
       client_reference_id: requestId.toString(),
       customer_email: email.trim(),
@@ -773,7 +804,7 @@ export const syncPaymentStatus = async (req, res) => {
           managedService.serviceFeePaymentId = session.payment_intent; // Update to payment intent ID
           managedService.serviceFeePaidAt = new Date();
           managedService.status = "in_progress";
-          managedService.stage = "submitted";
+          managedService.stage = "review"; // First step after payment - admin review
 
           // Link to user if not already linked
           if (!managedService.userId) {
@@ -924,7 +955,7 @@ export const getRequestDetails = async (req, res) => {
 
 /**
  * Update Managed Service Request
- * Only allowed if stage is 'payment_pending' or 'submitted'
+ * Only allowed if stage is 'payment_pending' or 'review' (first stage after payment)
  */
 export const updateRequest = async (req, res) => {
   try {
@@ -961,8 +992,8 @@ export const updateRequest = async (req, res) => {
       });
     }
 
-    // Check if editable
-    const editableStages = ["payment_pending", "submitted"];
+    // Check if editable - allow editing during payment_pending and review stages
+    const editableStages = ["payment_pending", "review"];
     if (!editableStages.includes(request.stage)) {
       return res.status(403).json({
         success: false,
@@ -970,8 +1001,19 @@ export const updateRequest = async (req, res) => {
       });
     }
 
-    // Update allowed fields
-    if (category) request.category = category;
+    // Category can only be edited before payment (payment_pending stage)
+    // After payment, category is locked because it's tied to the service fee price
+    if (category && request.stage === "payment_pending") {
+      request.category = category;
+    } else if (category && request.stage !== "payment_pending") {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Category cannot be changed after payment as it affects the service fee",
+      });
+    }
+
+    // Update other allowed fields (can be edited in both payment_pending and review stages)
     if (specifications) request.specifications = specifications;
     if (quantity) request.quantity = quantity;
     if (deliveryLocation) request.deliveryLocation = deliveryLocation;

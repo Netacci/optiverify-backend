@@ -1,5 +1,5 @@
 import express from "express";
-import { authenticate } from "../../middleware/auth.js";
+import { authenticate, optionalAuth } from "../../middleware/auth.js";
 import {
   initiateRequest,
   initiatePublicRequest,
@@ -17,9 +17,9 @@ const router = express.Router();
 // POST /api/managed-services/public/initiate - Start a new request (public)
 router.post("/public/initiate", initiatePublicRequest);
 
-// Public payment endpoint (no auth required for public submissions)
+// Public payment endpoint (optional auth - allows both authenticated and unauthenticated users)
 // POST /api/managed-services/payment/create-session - Create Stripe checkout session
-router.post("/payment/create-session", createPaymentSession);
+router.post("/payment/create-session", optionalAuth, createPaymentSession);
 
 // Authenticated routes
 router.use(authenticate);

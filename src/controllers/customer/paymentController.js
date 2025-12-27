@@ -752,7 +752,7 @@ export const handleWebhook = async (req, res) => {
         managedService.serviceFeePaymentId = session.payment_intent;
         managedService.serviceFeePaidAt = new Date();
         managedService.status = "in_progress";
-        managedService.stage = "submitted";
+        managedService.stage = "review"; // First step after payment - admin review
         await managedService.save();
         console.log(
           `[Webhook] Successfully updated managed service ${managedService._id}. Status: ${managedService.status}, Stage: ${managedService.stage}`
@@ -1466,138 +1466,142 @@ export const handleWebhook = async (req, res) => {
             console.log(
               `[Webhook] Match report ${matchReport._id} updated successfully (status: ${matchReport.status})`
             );
+          }
 
-            // Use verification token from metadata if available (generated before Stripe session)
-            // Otherwise generate a new one (fallback for older payments or edge cases)
-            const verificationToken =
-              session.metadata?.verificationToken ||
-              generateTokenService(
-                payment.email,
-                payment.requestId?.toString() || "general",
-                "verification"
-              );
+          // Use verification token from metadata if available (generated before Stripe session)
+          // Otherwise generate a new one (fallback for older payments or edge cases)
+          const verificationToken =
+            session.metadata?.verificationToken ||
+            generateTokenService(
+              payment.email,
+              payment.requestId?.toString() || "general",
+              "verification"
+            );
 
-            // Update user subscription if it's a subscription plan
-            let isVerifiedUser = false;
+          // Update user subscription if it's a subscription plan
+          let isVerifiedUser = false;
 
-            if (isSubscriptionPlan(payment.planType)) {
-              const userEmail = payment.email.toLowerCase().trim();
-              let user = await User.findOne({
-                email: userEmail,
-              });
+          if (isSubscriptionPlan(payment.planType)) {
+            const userEmail = payment.email.toLowerCase().trim();
+            let user = await User.findOne({
+              email: userEmail,
+            });
 
-              if (!user) {
-                // Create user if doesn't exist (will be verified when they click email link)
-                console.log(
-                  `[Webhook] Creating new user for subscription payment: ${userEmail}`
-                );
-                user = new User({
-                  email: userEmail,
-                  isVerified: false,
-                });
-              } else {
-                console.log(
-                  `[Webhook] Found existing user ${user._id} for subscription payment: ${userEmail}`
-                );
-                if (user.isVerified) isVerifiedUser = true;
-              }
-
-              user.subscriptionStatus = "active";
-              user.subscriptionPlan = payment.planType;
-              user.stripeCustomerId = session.customer;
-              user.stripeSubscriptionId = session.subscription;
-
-              // Handle credits with rollover for professional plans
-              const creditsForPlan = await getCreditsForPlan(payment.planType);
-              const maxRollover = await getMaxRolloverCredits(payment.planType);
-              const currentCredits = user.matchCredits || 0;
-              const creditsBefore = currentCredits;
-
-              if (maxRollover > 0 && currentCredits > 0) {
-                // Professional plan: rollover up to maxRollover credits
-                const rolloverCredits = Math.min(currentCredits, maxRollover);
-                user.matchCredits = creditsForPlan + rolloverCredits;
-              } else {
-                // Starter plan or no existing credits: just set new credits
-                user.matchCredits = creditsForPlan;
-              }
-
-              // Create credit transaction record for audit
-              const CreditTransaction = (
-                await import("../../models/customer/CreditTransaction.js")
-              ).default;
-              await CreditTransaction.create({
-                userId: user._id,
-                requestId: null, // Subscription allocation not tied to specific request
-                matchReportId: null,
-                email: user.email,
-                creditsUsed: user.matchCredits - creditsBefore,
-                creditsBefore,
-                creditsAfter: user.matchCredits,
-                transactionType: "added",
-                reason: "subscription_allocation",
-                notes: `Credits allocated from ${payment.planType} subscription`,
-              });
-
-              // Set expiry date (create new Date objects to avoid mutation)
-              const now = new Date();
-              if (
-                payment.planType === "starter_monthly" ||
-                payment.planType === "professional_monthly"
-              ) {
-                const expiryDate = new Date(now);
-                expiryDate.setMonth(expiryDate.getMonth() + 1);
-                user.subscriptionExpiresAt = expiryDate;
-              } else if (
-                payment.planType === "starter_annual" ||
-                payment.planType === "professional_annual"
-              ) {
-                const expiryDate = new Date(now);
-                expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-                user.subscriptionExpiresAt = expiryDate;
-              }
-
-              await user.save();
+            if (!user) {
+              // Create user if doesn't exist (will be verified when they click email link)
               console.log(
-                `[Webhook] Updated user ${user._id} with subscription ${payment.planType}, expires at ${user.subscriptionExpiresAt}`
+                `[Webhook] Creating new user for subscription payment: ${userEmail}`
               );
-            } else if (payment.planType === "extra_credit") {
-              // For extra_credit payments, add credits (already handled above, but check verification)
-              const user = await User.findOne({
-                email: payment.email.toLowerCase().trim(),
+              user = new User({
+                email: userEmail,
+                isVerified: false,
               });
-              if (user && user.isVerified) isVerifiedUser = true;
             } else {
-              // For one-time payments, just check verification status
-              const user = await User.findOne({
-                email: payment.email.toLowerCase().trim(),
-              });
-              if (user && user.isVerified) isVerifiedUser = true;
+              console.log(
+                `[Webhook] Found existing user ${user._id} for subscription payment: ${userEmail}`
+              );
+              if (user.isVerified) isVerifiedUser = true;
             }
 
-            // Send combined payment confirmation + verification email
-            try {
-              if (isVerifiedUser) {
-                // User is already verified, just send receipt
-                await sendPaymentConfirmationEmail({
-                  email: payment.email,
-                  requestId: payment.requestId?.toString() || "general",
-                  planType: payment.planType,
-                  token: verificationToken, // Pass token just in case, but URL in email will differ
-                });
-              } else {
-                // User needs verification
-                await sendPaymentAndVerificationEmail({
-                  email: payment.email,
-                  requestId: payment.requestId?.toString() || "general",
-                  planType: payment.planType,
-                  verificationToken,
-                });
-              }
-            } catch (emailError) {
-              console.error("Failed to send email:", emailError);
-              // Don't fail the payment if email fails - payment is already successful
+            user.subscriptionStatus = "active";
+            user.subscriptionPlan = payment.planType;
+            user.stripeCustomerId = session.customer;
+            user.stripeSubscriptionId = session.subscription;
+
+            // Handle credits with rollover for professional plans
+            const creditsForPlan = await getCreditsForPlan(payment.planType);
+            const maxRollover = await getMaxRolloverCredits(payment.planType);
+            const currentCredits = user.matchCredits || 0;
+            const creditsBefore = currentCredits;
+
+            if (maxRollover > 0 && currentCredits > 0) {
+              // Professional plan: rollover up to maxRollover credits
+              const rolloverCredits = Math.min(currentCredits, maxRollover);
+              user.matchCredits = creditsForPlan + rolloverCredits;
+            } else {
+              // Starter plan or no existing credits: just set new credits
+              user.matchCredits = creditsForPlan;
             }
+
+            // Create credit transaction record for audit
+            const CreditTransaction = (
+              await import("../../models/customer/CreditTransaction.js")
+            ).default;
+            await CreditTransaction.create({
+              userId: user._id,
+              requestId: null, // Subscription allocation not tied to specific request
+              matchReportId: null,
+              email: user.email,
+              creditsUsed: user.matchCredits - creditsBefore,
+              creditsBefore,
+              creditsAfter: user.matchCredits,
+              transactionType: "added",
+              reason: "subscription_allocation",
+              notes: `Credits allocated from ${payment.planType} subscription`,
+            });
+
+            // Set expiry date (create new Date objects to avoid mutation)
+            const now = new Date();
+            if (
+              payment.planType === "starter_monthly" ||
+              payment.planType === "professional_monthly"
+            ) {
+              const expiryDate = new Date(now);
+              expiryDate.setMonth(expiryDate.getMonth() + 1);
+              user.subscriptionExpiresAt = expiryDate;
+            } else if (
+              payment.planType === "starter_annual" ||
+              payment.planType === "professional_annual"
+            ) {
+              const expiryDate = new Date(now);
+              expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+              user.subscriptionExpiresAt = expiryDate;
+            }
+
+            await user.save();
+            console.log(
+              `[Webhook] Updated user ${user._id} with subscription ${payment.planType}, expires at ${user.subscriptionExpiresAt}`
+            );
+          } else if (payment.planType === "extra_credit") {
+            // For extra_credit payments, add credits (already handled above, but check verification)
+            const user = await User.findOne({
+              email: payment.email.toLowerCase().trim(),
+            });
+            if (user && user.isVerified) isVerifiedUser = true;
+          } else {
+            // For one-time payments, just check verification status
+            const user = await User.findOne({
+              email: payment.email.toLowerCase().trim(),
+            });
+            if (user && user.isVerified) isVerifiedUser = true;
+          }
+
+          // Send combined payment confirmation + verification email
+          // This should happen for ALL payments, not just when matchReport exists
+          try {
+            if (isVerifiedUser) {
+              // User is already verified, just send receipt
+              await sendPaymentConfirmationEmail({
+                email: payment.email,
+                requestId: payment.requestId?.toString() || "general",
+                planType: payment.planType,
+                token: verificationToken, // Pass token just in case, but URL in email will differ
+              });
+            } else {
+              // User needs verification
+              await sendPaymentAndVerificationEmail({
+                email: payment.email,
+                requestId: payment.requestId?.toString() || "general",
+                planType: payment.planType,
+                verificationToken,
+              });
+            }
+            console.log(
+              `[Webhook] Sent payment confirmation email to ${payment.email}`
+            );
+          } catch (emailError) {
+            console.error("Failed to send email:", emailError);
+            // Don't fail the payment if email fails - payment is already successful
           }
         }
       }
