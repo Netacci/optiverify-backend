@@ -2106,9 +2106,10 @@ export const syncPaymentStatus = async (req, res) => {
               user.stripeSubscriptionId = session.subscription;
 
               // Handle credits with rollover for professional plans
-              const creditsForPlan = getCreditsForPlan(payment.planType);
-              const maxRollover = getMaxRolloverCredits(payment.planType);
+              const creditsForPlan = await getCreditsForPlan(payment.planType);
+              const maxRollover = await getMaxRolloverCredits(payment.planType);
               const currentCredits = user.matchCredits || 0;
+              const creditsBefore = currentCredits;
 
               if (maxRollover > 0 && currentCredits > 0) {
                 // Professional plan: rollover up to maxRollover credits
@@ -2118,6 +2119,23 @@ export const syncPaymentStatus = async (req, res) => {
                 // Starter plan or no existing credits: just set new credits
                 user.matchCredits = creditsForPlan;
               }
+
+              // Create credit transaction record for audit
+              const CreditTransaction = (
+                await import("../../models/customer/CreditTransaction.js")
+              ).default;
+              await CreditTransaction.create({
+                userId: user._id,
+                requestId: null, // Subscription allocation not tied to specific request
+                matchReportId: null,
+                email: user.email,
+                creditsUsed: user.matchCredits - creditsBefore,
+                creditsBefore,
+                creditsAfter: user.matchCredits,
+                transactionType: "added",
+                reason: "subscription_allocation",
+                notes: `Credits allocated from ${payment.planType} subscription (sync)`,
+              });
 
               const now = new Date();
               if (
@@ -2138,7 +2156,7 @@ export const syncPaymentStatus = async (req, res) => {
 
               await user.save();
               console.log(
-                `[syncPaymentStatus] Updated user ${user._id} subscription via sync`
+                `[syncPaymentStatus] Updated user ${user._id} subscription via sync with ${user.matchCredits} credits`
               );
             }
 
@@ -2280,8 +2298,8 @@ export const syncUserPayments = async (req, res) => {
               }
 
               // Handle credits with rollover for professional plans
-              const creditsForPlan = getCreditsForPlan(payment.planType);
-              const maxRollover = getMaxRolloverCredits(payment.planType);
+              const creditsForPlan = await getCreditsForPlan(payment.planType);
+              const maxRollover = await getMaxRolloverCredits(payment.planType);
               const currentCredits = user.matchCredits || 0;
 
               if (maxRollover > 0 && currentCredits > 0) {
@@ -2406,9 +2424,14 @@ export const syncUserPayments = async (req, res) => {
                   }
 
                   // Handle credits with rollover for professional plans
-                  const creditsForPlan = getCreditsForPlan(payment.planType);
-                  const maxRollover = getMaxRolloverCredits(payment.planType);
+                  const creditsForPlan = await getCreditsForPlan(
+                    payment.planType
+                  );
+                  const maxRollover = await getMaxRolloverCredits(
+                    payment.planType
+                  );
                   const currentCredits = subscriptionUser.matchCredits || 0;
+                  const creditsBefore = currentCredits;
 
                   if (maxRollover > 0 && currentCredits > 0) {
                     const rolloverCredits = Math.min(
@@ -2420,6 +2443,23 @@ export const syncUserPayments = async (req, res) => {
                   } else {
                     subscriptionUser.matchCredits = creditsForPlan;
                   }
+
+                  // Create credit transaction record for audit
+                  const CreditTransaction = (
+                    await import("../../models/customer/CreditTransaction.js")
+                  ).default;
+                  await CreditTransaction.create({
+                    userId: subscriptionUser._id,
+                    requestId: null, // Subscription allocation not tied to specific request
+                    matchReportId: null,
+                    email: subscriptionUser.email,
+                    creditsUsed: subscriptionUser.matchCredits - creditsBefore,
+                    creditsBefore,
+                    creditsAfter: subscriptionUser.matchCredits,
+                    transactionType: "added",
+                    reason: "subscription_allocation",
+                    notes: `Credits allocated from ${payment.planType} subscription (sync)`,
+                  });
 
                   const now = new Date();
                   if (
@@ -2519,9 +2559,14 @@ export const syncUserPayments = async (req, res) => {
                   matchingSession.subscription;
 
                 // Handle credits with rollover for professional plans
-                const creditsForPlan = getCreditsForPlan(payment.planType);
-                const maxRollover = getMaxRolloverCredits(payment.planType);
+                const creditsForPlan = await getCreditsForPlan(
+                  payment.planType
+                );
+                const maxRollover = await getMaxRolloverCredits(
+                  payment.planType
+                );
                 const currentCredits = subscriptionUser.matchCredits || 0;
+                const creditsBefore = currentCredits;
 
                 if (maxRollover > 0 && currentCredits > 0) {
                   const rolloverCredits = Math.min(currentCredits, maxRollover);
@@ -2530,6 +2575,23 @@ export const syncUserPayments = async (req, res) => {
                 } else {
                   subscriptionUser.matchCredits = creditsForPlan;
                 }
+
+                // Create credit transaction record for audit
+                const CreditTransaction = (
+                  await import("../../models/customer/CreditTransaction.js")
+                ).default;
+                await CreditTransaction.create({
+                  userId: subscriptionUser._id,
+                  requestId: null, // Subscription allocation not tied to specific request
+                  matchReportId: null,
+                  email: subscriptionUser.email,
+                  creditsUsed: subscriptionUser.matchCredits - creditsBefore,
+                  creditsBefore,
+                  creditsAfter: subscriptionUser.matchCredits,
+                  transactionType: "added",
+                  reason: "subscription_allocation",
+                  notes: `Credits allocated from ${payment.planType} subscription (sync from session list)`,
+                });
 
                 const now = new Date();
                 if (

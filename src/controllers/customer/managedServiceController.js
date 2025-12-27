@@ -635,13 +635,26 @@ export const createPaymentSession = async (req, res) => {
     }
 
     // Check if user exists with this email (only for non-authenticated users)
-    // If user exists but isn't authenticated, redirect them to login
-    if (!req.user) {
+    // If user is authenticated, skip this check entirely - they're already logged in
+    // IMPORTANT: If req.user exists, the user is authenticated and we should NOT check for existing users
+    const isAuthenticated = !!req.user;
+
+    console.log(
+      `[createPaymentSession] Request from email: ${email}, Authenticated: ${isAuthenticated}, User email: ${
+        req.user?.email || "none"
+      }`
+    );
+
+    // Only check for existing users if user is NOT authenticated
+    if (!isAuthenticated) {
       const existingUser = await User.findOne({
         email: email.trim().toLowerCase(),
       });
 
       if (existingUser) {
+        console.log(
+          `[createPaymentSession] User not authenticated but account exists with email ${email}, returning USER_EXISTS`
+        );
         return res.status(400).json({
           success: false,
           message:
@@ -651,6 +664,19 @@ export const createPaymentSession = async (req, res) => {
             process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3005"
           }/login`,
         });
+      }
+    } else {
+      // User is authenticated - use their email and skip all existing user checks
+      console.log(
+        `[createPaymentSession] User is authenticated (${req.user.email}), skipping existing user check`
+      );
+      // Use the authenticated user's email to ensure consistency
+      if (req.user.email.toLowerCase() !== email.trim().toLowerCase()) {
+        console.log(
+          `[createPaymentSession] Email mismatch: provided (${email}) vs authenticated (${req.user.email}). Using authenticated user's email.`
+        );
+        request.email = req.user.email.toLowerCase();
+        await request.save();
       }
     }
 
