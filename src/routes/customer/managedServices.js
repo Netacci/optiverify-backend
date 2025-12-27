@@ -9,6 +9,7 @@ import {
   createSavingsFeePaymentSession,
   syncPaymentStatus,
   updateRequest,
+  deleteRequest,
 } from "../../controllers/customer/managedServiceController.js";
 
 const router = express.Router();
@@ -41,6 +42,9 @@ router.get("/:id", getRequestDetails);
 
 // PUT /api/managed-services/:id - Update request (if editable)
 router.put("/:id", updateRequest);
+
+// DELETE /api/managed-services/:id - Delete request (only if payment_pending)
+router.delete("/:id", deleteRequest);
 
 export default router;
 

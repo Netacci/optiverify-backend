@@ -1061,3 +1061,66 @@ export const updateRequest = async (req, res) => {
     });
   }
 };
+
+/**
+ * Delete a managed service request
+ * Only allowed for requests with stage "payment_pending"
+ */
+export const deleteRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.user?.email?.toLowerCase().trim();
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Request ID is required",
+      });
+    }
+
+    // Find the request - user must own it (by userId or email)
+    const request = await ManagedService.findOne({
+      _id: id,
+      $or: [
+        { userId: req.user._id },
+        {
+          email: {
+            $regex: new RegExp(
+              `^${userEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+              "i"
+            ),
+          },
+        },
+      ],
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    // Only allow deletion if stage is "payment_pending"
+    if (request.stage !== "payment_pending") {
+      return res.status(403).json({
+        success: false,
+        message: "Only requests with pending payment can be deleted",
+      });
+    }
+
+    // Delete the request
+    await ManagedService.findByIdAndDelete(id);
+
+    res.json({
+      success: true,
+      message: "Request deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting request:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
