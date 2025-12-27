@@ -57,15 +57,134 @@ export const processMatching = async (req, res) => {
       }
     }
 
-    // If user doesn't have active subscription, redirect to payment page
+    // If user doesn't have active subscription, generate fallback (rule-based) match for preview
+    // This allows public users to see a preview before payment
     if (!hasActivePlan) {
-      return res.status(402).json({
-        success: false,
-        message: "Payment required to process matching",
-        code: "PAYMENT_REQUIRED",
-        redirectUrl: `${
-          process.env.FRONTEND_URL || "http://localhost:3000"
-        }/payment-plans?requestId=${id}`,
+      // Generate fallback match using rule-based scoring
+      const allSuppliers = await Supplier.find({ isActive: true });
+      if (allSuppliers.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No suppliers available in database",
+        });
+      }
+
+      // Calculate rule-based match scores
+      const suppliersWithScores = allSuppliers.map((supplier) => {
+        const matchResult = calculateRuleBasedScore(buyerRequest, supplier);
+        return {
+          supplier,
+          matchScore: matchResult.score,
+          factors: matchResult.factors,
+          whyMatch: matchResult.whyMatch || matchResult.factors.join(", "),
+        };
+      });
+
+      // Sort by match score (highest first)
+      suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+
+      // Filter suppliers with score > 0 and get top 5
+      const qualifiedSuppliers = suppliersWithScores.filter(
+        (item) => item.matchScore > 0
+      );
+      const topSuppliers = qualifiedSuppliers.slice(0, 5);
+
+      if (topSuppliers.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No matching suppliers found",
+        });
+      }
+
+      // Select preview supplier (highest score)
+      const previewSupplier = topSuppliers[0].supplier;
+      const averageScore = Math.round(
+        topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
+          topSuppliers.length
+      );
+
+      // Generate simple summary
+      const requestSummary = buyerRequest.description
+        ? buyerRequest.description.substring(0, 200)
+        : `Request for ${buyerRequest.name} in ${buyerRequest.category} category`;
+
+      // Create or update match report with fallback data (status: pending)
+      if (!matchReport) {
+        matchReport = new MatchReport({
+          requestId: id,
+          email: buyerRequest.email,
+          status: "pending",
+          preview: {
+            summary: requestSummary,
+            category: buyerRequest.category,
+            matchedCount: topSuppliers.length,
+            matchScore: averageScore,
+            previewSupplier: previewSupplier._id,
+          },
+          fullReport: {
+            suppliers: topSuppliers.map((item, index) => ({
+              supplierId: item.supplier._id,
+              matchScore: item.matchScore,
+              ranking: index + 1,
+              whyTheyMatch: item.whyMatch,
+              aiExplanation: generateTemplateExplanation(
+                buyerRequest,
+                item.supplier,
+                item.matchScore,
+                item.factors || []
+              ),
+              strengths: [],
+              concerns: [],
+            })),
+            generatedAt: new Date(),
+          },
+        });
+      } else {
+        matchReport.status = "pending";
+        matchReport.preview = {
+          summary: requestSummary,
+          category: buyerRequest.category,
+          matchedCount: topSuppliers.length,
+          matchScore: averageScore,
+          previewSupplier: previewSupplier._id,
+        };
+        matchReport.fullReport = {
+          suppliers: topSuppliers.map((item, index) => ({
+            supplierId: item.supplier._id,
+            matchScore: item.matchScore,
+            ranking: index + 1,
+            whyTheyMatch: item.whyMatch,
+            aiExplanation: generateTemplateExplanation(
+              buyerRequest,
+              item.supplier,
+              item.matchScore,
+              item.factors || []
+            ),
+            strengths: [],
+            concerns: [],
+          })),
+          generatedAt: new Date(),
+        };
+      }
+
+      await matchReport.save();
+
+      // Return preview data (without supplier names) - this is what the frontend expects
+      return res.json({
+        success: true,
+        message: "Fallback match generated successfully",
+        data: {
+          requestId: id,
+          matchReportId: matchReport._id,
+          isUnlocked: false,
+          preview: {
+            summary: matchReport.preview.summary,
+            category: matchReport.preview.category,
+            matchedCount: matchReport.preview.matchedCount,
+            matchScore: matchReport.preview.matchScore,
+            message: "Preview ready! Unlock to see full details.",
+          },
+        },
       });
     }
 
@@ -262,19 +381,105 @@ export const getPreview = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const matchReport = await MatchReport.findOne({ requestId: id }).populate(
+    let matchReport = await MatchReport.findOne({ requestId: id }).populate(
       "preview.previewSupplier"
     );
 
-    if (!matchReport) {
+    // Get buyer request (needed for both existing and new match reports)
+    const buyerRequest = await BuyerRequest.findById(id);
+    if (!buyerRequest) {
       return res.status(404).json({
         success: false,
-        message: "Match report not found",
+        message: "Request not found",
       });
     }
 
-    // Get buyer request and first supplier from full report to calculate fits
-    const buyerRequest = await BuyerRequest.findById(id);
+    // If no match report exists, generate a fallback (rule-based) match for preview
+    if (!matchReport) {
+      // Generate fallback match using rule-based scoring
+      const allSuppliers = await Supplier.find({ isActive: true });
+      if (allSuppliers.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No suppliers available",
+        });
+      }
+
+      // Calculate rule-based match scores
+      const suppliersWithScores = allSuppliers.map((supplier) => {
+        const matchResult = calculateRuleBasedScore(buyerRequest, supplier);
+        return {
+          supplier,
+          matchScore: matchResult.score,
+          factors: matchResult.factors,
+          whyMatch: matchResult.whyMatch || matchResult.factors.join(", "),
+        };
+      });
+
+      // Sort by match score (highest first)
+      suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+
+      // Filter suppliers with score > 0 and get top 5
+      const qualifiedSuppliers = suppliersWithScores.filter(
+        (item) => item.matchScore > 0
+      );
+      const topSuppliers = qualifiedSuppliers.slice(0, 5);
+
+      if (topSuppliers.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No matching suppliers found",
+        });
+      }
+
+      // Select preview supplier (highest score)
+      const previewSupplier = topSuppliers[0].supplier;
+      const averageScore = Math.round(
+        topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
+          topSuppliers.length
+      );
+
+      // Generate simple summary
+      const requestSummary = buyerRequest.description
+        ? buyerRequest.description.substring(0, 200)
+        : `Request for ${buyerRequest.name} in ${buyerRequest.category} category`;
+
+      // Create match report with fallback data (status: pending)
+      matchReport = new MatchReport({
+        requestId: id,
+        email: buyerRequest.email,
+        status: "pending",
+        preview: {
+          summary: requestSummary,
+          category: buyerRequest.category,
+          matchedCount: topSuppliers.length,
+          matchScore: averageScore,
+          previewSupplier: previewSupplier._id,
+        },
+        fullReport: {
+          suppliers: topSuppliers.map((item, index) => ({
+            supplierId: item.supplier._id,
+            matchScore: item.matchScore,
+            ranking: index + 1,
+            whyTheyMatch: item.whyMatch,
+            aiExplanation: generateTemplateExplanation(
+              buyerRequest,
+              item.supplier,
+              item.matchScore,
+              item.factors || []
+            ),
+            strengths: [],
+            concerns: [],
+          })),
+          generatedAt: new Date(),
+        },
+      });
+
+      await matchReport.save();
+      await matchReport.populate("preview.previewSupplier");
+    }
+
+    // Get match report with suppliers populated to calculate fits
     const matchReportWithSuppliers = await MatchReport.findOne({
       requestId: id,
     }).populate("fullReport.suppliers.supplierId");

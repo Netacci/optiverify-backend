@@ -346,6 +346,9 @@ export function generateTemplateExplanation(
   factors
 ) {
   const explanations = [];
+  
+  // Ensure factors is an array
+  const factorsArray = Array.isArray(factors) ? factors : [];
 
   if (matchScore >= 80) {
     explanations.push(
@@ -357,7 +360,7 @@ export function generateTemplateExplanation(
     explanations.push("Moderate match with some relevant capabilities.");
   }
 
-  if (factors.includes("Category match")) {
+  if (factorsArray.includes("Category match")) {
     explanations.push(
       `Specializes in ${supplier.category}, directly matching your needs.`
     );
