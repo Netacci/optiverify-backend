@@ -97,11 +97,69 @@ export const getSuppliers = async (req, res) => {
 };
 
 /**
+ * Get supplier by ID
+ */
+export const getSupplierById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const supplier = await Supplier.findById(id);
+
+    if (!supplier) {
+      return res.status(404).json({
+        success: false,
+        message: "Supplier not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: supplier,
+    });
+  } catch (error) {
+    console.error("Error getting supplier:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+/**
  * Create supplier
  */
 export const createSupplier = async (req, res) => {
   try {
-    const supplier = await Supplier.create(req.body);
+    // Clean up the data - remove empty strings and convert date strings to Date objects
+    const supplierData = { ...req.body };
+    
+    // Convert empty strings to undefined for optional fields
+    Object.keys(supplierData).forEach((key) => {
+      if (supplierData[key] === "" || supplierData[key] === null) {
+        // Keep required fields, but remove optional empty fields
+        if (!["name", "category", "description", "location", "email"].includes(key)) {
+          delete supplierData[key];
+        }
+      }
+    });
+
+    // Convert lastVerifiedDate string to Date if provided
+    if (supplierData.lastVerifiedDate && typeof supplierData.lastVerifiedDate === "string") {
+      supplierData.lastVerifiedDate = new Date(supplierData.lastVerifiedDate);
+    }
+
+    // Ensure arrays are properly formatted
+    if (supplierData.certifications && !Array.isArray(supplierData.certifications)) {
+      supplierData.certifications = [];
+    }
+    if (supplierData.capabilities && !Array.isArray(supplierData.capabilities)) {
+      supplierData.capabilities = [];
+    }
+    if (supplierData.keywords && !Array.isArray(supplierData.keywords)) {
+      supplierData.keywords = [];
+    }
+
+    const supplier = await Supplier.create(supplierData);
 
     res.status(201).json({
       success: true,
@@ -110,6 +168,18 @@ export const createSupplier = async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating supplier:", error);
+    
+    // Handle validation errors
+    if (error.name === "ValidationError") {
+      const errors = Object.values(error.errors).map((err) => err.message);
+      return res.status(400).json({
+        success: false,
+        message: "Validation error",
+        errors,
+        error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -295,12 +365,34 @@ export const bulkUploadSuppliers = async (req, res) => {
         description: normalizedRow.description.toString().trim(),
         location: normalizedRow.location.toString().trim(),
         email: normalizedRow.email.toString().trim().toLowerCase(),
+        // New fields - optional
+        subCategory: normalizedRow.sub_category || normalizedRow.subcategory
+          ? normalizedRow.sub_category || normalizedRow.subcategory
+          : "",
+        country: normalizedRow.country ? normalizedRow.country.toString().trim() : "",
+        stateRegion: normalizedRow.state_region || normalizedRow.stateregion || normalizedRow.state
+          ? (normalizedRow.state_region || normalizedRow.stateregion || normalizedRow.state).toString().trim()
+          : "",
+        city: normalizedRow.city ? normalizedRow.city.toString().trim() : "",
+        contactName: normalizedRow.contact_name || normalizedRow.contactname
+          ? (normalizedRow.contact_name || normalizedRow.contactname).toString().trim()
+          : "",
         phone: normalizedRow.phone ? normalizedRow.phone.toString().trim() : "",
         website: normalizedRow.website
           ? normalizedRow.website.toString().trim()
           : "",
         certifications: normalizedRow.certifications
           ? normalizedRow.certifications
+              .toString()
+              .split(",")
+              .map((c) => c.trim())
+              .filter((c) => c)
+          : [],
+        diversityType: normalizedRow.diversity_type || normalizedRow.diversitytype
+          ? (normalizedRow.diversity_type || normalizedRow.diversitytype).toString().trim()
+          : "",
+        capabilities: normalizedRow.capabilities || normalizedRow.primary_products || normalizedRow.primaryproducts
+          ? (normalizedRow.capabilities || normalizedRow.primary_products || normalizedRow.primaryproducts)
               .toString()
               .split(",")
               .map((c) => c.trim())
@@ -324,13 +416,16 @@ export const bulkUploadSuppliers = async (req, res) => {
                 .toString()
                 .trim()
             : "",
-        capabilities: normalizedRow.capabilities
-          ? normalizedRow.capabilities
-              .toString()
-              .split(",")
-              .map((c) => c.trim())
-              .filter((c) => c)
-          : [],
+        annualCapacity: normalizedRow.annual_capacity || normalizedRow.annualcapacity || normalizedRow.volume_notes || normalizedRow.volumenotes
+          ? (normalizedRow.annual_capacity || normalizedRow.annualcapacity || normalizedRow.volume_notes || normalizedRow.volumenotes).toString().trim()
+          : "",
+        industry: normalizedRow.industry ? normalizedRow.industry.toString().trim() : "",
+        riskFlags: normalizedRow.risk_flags || normalizedRow.riskflags
+          ? (normalizedRow.risk_flags || normalizedRow.riskflags).toString().trim()
+          : "",
+        dataSource: normalizedRow.data_source || normalizedRow.datasource
+          ? (normalizedRow.data_source || normalizedRow.datasource).toString().trim()
+          : "",
         keywords: normalizedRow.keywords
           ? normalizedRow.keywords
               .toString()
@@ -338,6 +433,20 @@ export const bulkUploadSuppliers = async (req, res) => {
               .map((k) => k.trim())
               .filter((k) => k)
           : [],
+        verified: normalizedRow.verified !== undefined
+          ? normalizedRow.verified.toString().toLowerCase() === "true" ||
+            normalizedRow.verified.toString().toLowerCase() === "yes" ||
+            normalizedRow.verified.toString() === "1"
+          : false,
+        lastVerifiedDate: normalizedRow.last_verified_date || normalizedRow.lastverifieddate
+          ? new Date(normalizedRow.last_verified_date || normalizedRow.lastverifieddate)
+          : undefined,
+        internalNotes: normalizedRow.internal_notes || normalizedRow.internalnotes
+          ? (normalizedRow.internal_notes || normalizedRow.internalnotes).toString().trim()
+          : "",
+        buyerMatchRecommendation: normalizedRow.buyer_match_recommendation || normalizedRow.buyermatchrecommendation
+          ? (normalizedRow.buyer_match_recommendation || normalizedRow.buyermatchrecommendation).toString().trim()
+          : "",
         isActive:
           normalizedRow.is_active !== undefined
             ? normalizedRow.is_active.toString().toLowerCase() === "true" ||

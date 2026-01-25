@@ -13,6 +13,7 @@ import {
 } from "../../controllers/admin/adminController.js";
 import {
   getSuppliers,
+  getSupplierById,
   createSupplier,
   updateSupplier,
   deleteSupplier,
@@ -32,6 +33,7 @@ router.get("/stats", requireAdmin, getDashboardStats);
 
 // Suppliers
 router.get("/suppliers", requireAdmin, getSuppliers);
+router.get("/suppliers/:id", requireAdmin, getSupplierById);
 router.post("/suppliers", requireAdmin, createSupplier);
 router.post("/suppliers/bulk-upload", requireAdmin, upload.single("file"), bulkUploadSuppliers);
 router.put("/suppliers/:id", requireAdmin, updateSupplier);
