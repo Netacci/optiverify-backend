@@ -24,6 +24,7 @@ import categoriesRouter from "./routes/common/categories.js";
 import adminCategoriesRouter from "./routes/admin/categories.js";
 import matchReportsRouter from "./routes/admin/matchReports.js";
 import receiptsRouter from "./routes/customer/receipts.js";
+import contactRouter from "./routes/common/contact.js";
 import { handleWebhook } from "./controllers/customer/paymentController.js";
 
 const app = express();
@@ -38,7 +39,7 @@ const parseAllowedOrigins = () => {
   // If ALLOWED_ORIGINS is set, use it (comma-separated list)
   if (process.env.ALLOWED_ORIGINS) {
     origins.push(
-      ...process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
+      ...process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()),
     );
   } else {
     // Fallback to individual URL environment variables
@@ -54,18 +55,18 @@ const parseAllowedOrigins = () => {
   const isDevelopment = process.env.NODE_ENV !== "production";
   if (origins.length === 0 && isDevelopment) {
     console.warn(
-      "⚠️  No CORS origins configured. Using localhost defaults for development."
+      "⚠️  No CORS origins configured. Using localhost defaults for development.",
     );
     origins.push(
       "http://localhost:3002", // Frontend
       "http://localhost:3004", // Customer Dashboard
       "http://localhost:3003", // Admin Dashboard
       "http://localhost:3000",
-      "http://localhost:3001"
+      "http://localhost:3001",
     );
   } else if (origins.length === 0 && !isDevelopment) {
     throw new Error(
-      "❌ CORS origins must be configured in production. Please set ALLOWED_ORIGINS or individual URL environment variables."
+      "❌ CORS origins must be configured in production. Please set ALLOWED_ORIGINS or individual URL environment variables.",
     );
   }
 
@@ -101,7 +102,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 // Webhook route needs raw body, so we handle it before JSON parser
@@ -109,7 +110,7 @@ app.use(
 app.post(
   "/api/payments/webhook",
   express.raw({ type: "application/json" }),
-  handleWebhook
+  handleWebhook,
 );
 
 app.use(express.json());
@@ -144,6 +145,7 @@ app.use("/api/categories", categoriesRouter);
 app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/match-reports", matchReportsRouter);
 app.use("/api/receipts", receiptsRouter);
+app.use("/api/contact", contactRouter);
 
 // 404 handler
 app.use((req, res) => {

@@ -21,7 +21,7 @@ export const sendPaymentConfirmationEmail = async ({
 }) => {
   try {
     const reportUrl = `${FRONTEND_URL}/report/${requestId}?token=${token}&email=${encodeURIComponent(
-      email
+      email,
     )}`;
 
     const planNames = {
@@ -111,7 +111,7 @@ export const sendVerificationEmail = async ({
 }) => {
   try {
     const verifyUrl = `${CUSTOMER_DASHBOARD_URL}/verify?token=${token}&email=${encodeURIComponent(
-      email
+      email,
     )}&requestId=${requestId}`;
 
     const { data, error } = await resend.emails.send({
@@ -187,7 +187,7 @@ export const sendSubscriptionSetupEmail = async ({
 }) => {
   try {
     const setupUrl = `${CUSTOMER_DASHBOARD_URL}/verify?token=${token}&email=${encodeURIComponent(
-      email
+      email,
     )}`;
 
     const planNames = {
@@ -276,7 +276,7 @@ export const sendPaymentAndVerificationEmail = async ({
 }) => {
   try {
     const verifyUrl = `${CUSTOMER_DASHBOARD_URL}/verify?token=${verificationToken}&email=${encodeURIComponent(
-      email
+      email,
     )}`;
 
     const planNames = {
@@ -357,7 +357,7 @@ export const sendPaymentAndVerificationEmail = async ({
     }
 
     console.log(
-      `✅ Payment confirmation + verification email sent to ${email}`
+      `✅ Payment confirmation + verification email sent to ${email}`,
     );
     return { success: true, data };
   } catch (error) {
@@ -424,7 +424,7 @@ export const sendTestEmail = async (email) => {
 export const sendPasswordResetEmail = async ({ email, resetToken }) => {
   try {
     const resetUrl = `${CUSTOMER_DASHBOARD_URL}/reset-password?token=${resetToken}&email=${encodeURIComponent(
-      email
+      email,
     )}`;
 
     const { data, error } = await resend.emails.send({
@@ -485,6 +485,100 @@ export const sendPasswordResetEmail = async ({ email, resetToken }) => {
     return { success: true, data };
   } catch (error) {
     console.error("Error sending password reset email:", error);
+    throw error;
+  }
+};
+
+/**
+ * Send contact form email to support
+ */
+export const sendContactEmail = async ({
+  name,
+  email,
+  company,
+  role,
+  message,
+}) => {
+  try {
+    const supportEmail = "support@optiverifi.com";
+
+    const roleLabels = {
+      supplier: "Supplier",
+      buyer: "Buyer",
+      both: "Both Supplier and Buyer",
+      other: "Other",
+    };
+
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: supportEmail,
+      replyTo: email,
+      subject: `Contact Form Submission from ${name}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Contact Form Submission</title>
+          </head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0; font-size: 28px;">New Contact Form Submission</h1>
+            </div>
+            
+            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong style="color: #374151;">Name:</strong> ${name}
+                </p>
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong style="color: #374151;">Email:</strong> <a href="mailto:${email}" style="color: #667eea;">${email}</a>
+                </p>
+                ${
+                  company
+                    ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong style="color: #374151;">Company:</strong> ${company}
+                </p>`
+                    : ""
+                }
+                ${
+                  role
+                    ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong style="color: #374151;">Role:</strong> ${roleLabels[role] || role}
+                </p>`
+                    : ""
+                }
+              </div>
+              
+              <div style="margin-top: 30px;">
+                <h2 style="font-size: 18px; color: #374151; margin-bottom: 15px;">Message:</h2>
+                <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
+                  <p style="margin: 0; font-size: 14px; color: #374151; white-space: pre-wrap;">${message}</p>
+                </div>
+              </div>
+              
+            </div>
+            
+            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="font-size: 12px; color: #9ca3af;">
+                © ${new Date().getFullYear()} Optiverifi. All rights reserved.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error("Resend error:", error);
+      throw error;
+    }
+
+    console.log(`✅ Contact form email sent to ${supportEmail} from ${email}`);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending contact email:", error);
     throw error;
   }
 };
