@@ -6,7 +6,11 @@ import {
 } from "../../utils/managedServiceUtils.js";
 import Category from "../../models/admin/Category.js";
 import User from "../../models/common/User.js";
-import { sendEmail } from "../../services/emailService.js";
+import Payment from "../../models/customer/Payment.js";
+import {
+  sendEmail,
+  sendManagedServiceReceiptEmail,
+} from "../../services/emailService.js";
 import { generateToken as generateTokenService } from "../../services/tokenService.js";
 import Stripe from "stripe";
 
@@ -521,6 +525,8 @@ export const createSavingsFeePaymentSession = async (req, res) => {
         requestId: requestId.toString(),
         type: "managed_service_savings_fee",
         paymentType: "savings_fee",
+        userIsVerified: user.isVerified ? "true" : "false",
+        userId: user._id.toString(),
       },
       line_items: [
         {
@@ -571,7 +577,7 @@ export const createSavingsFeePaymentSession = async (req, res) => {
  */
 export const createPaymentSession = async (req, res) => {
   try {
-    const { requestId, amount, email } = req.body;
+    const { requestId, amount, email, userId: bodyUserId } = req.body;
 
     if (!requestId) {
       return res.status(400).json({
@@ -634,15 +640,24 @@ export const createPaymentSession = async (req, res) => {
       });
     }
 
-    // Check if user exists with this email (only for non-authenticated users)
-    // If user is authenticated, skip this check entirely - they're already logged in
-    // IMPORTANT: If req.user exists, the user is authenticated and we should NOT check for existing users
-    const isAuthenticated = !!req.user;
+    // Resolve "effective" user: from auth middleware (req.user) OR from body.userId (fallback if auth header didn't reach us)
+    let effectiveUser = req.user || null;
+    if (!effectiveUser && bodyUserId) {
+      const userByBody = await User.findById(bodyUserId);
+      if (userByBody) {
+        effectiveUser = userByBody;
+        console.log(
+          `[createPaymentSession] Using userId from payload: ${bodyUserId}, isVerified: ${effectiveUser.isVerified}`
+        );
+      }
+    }
+
+    const isAuthenticated = !!effectiveUser;
 
     console.log(
       `[createPaymentSession] Request from email: ${email}, Authenticated: ${isAuthenticated}, User email: ${
-        req.user?.email || "none"
-      }`
+        effectiveUser?.email || "none"
+      }, bodyUserId: ${bodyUserId ?? "none"}`
     );
 
     // Only check for existing users if user is NOT authenticated
@@ -666,31 +681,33 @@ export const createPaymentSession = async (req, res) => {
         });
       }
     } else {
-      // User is authenticated - use their email and skip all existing user checks
       console.log(
-        `[createPaymentSession] User is authenticated (${req.user.email}), skipping existing user check`
+        `[createPaymentSession] User is authenticated (${effectiveUser.email}), isVerified: ${effectiveUser.isVerified}`
       );
-      // Use the authenticated user's email to ensure consistency
-      if (req.user.email.toLowerCase() !== email.trim().toLowerCase()) {
+      if (effectiveUser.email.toLowerCase() !== email.trim().toLowerCase()) {
         console.log(
-          `[createPaymentSession] Email mismatch: provided (${email}) vs authenticated (${req.user.email}). Using authenticated user's email.`
+          `[createPaymentSession] Email mismatch: provided (${email}) vs account (${effectiveUser.email}). Using account email.`
         );
-        request.email = req.user.email.toLowerCase();
+        request.email = effectiveUser.email.toLowerCase();
         await request.save();
       }
     }
 
-    // Generate verification token BEFORE creating Stripe session (same flow as regular requests)
+    const effectiveEmail = isAuthenticated
+      ? effectiveUser.email.toLowerCase()
+      : email.trim().toLowerCase();
+
     const verificationToken = generateTokenService(
-      email.trim(),
+      effectiveEmail,
       requestId.toString(),
       "verification"
     );
 
-    // Check if user is authenticated and verified (req.user is set by optionalAuth middleware)
-    // If authenticated and verified, redirect to managed service details page
-    // Otherwise, redirect to check-email page for verification
-    const isVerifiedUser = req.user && req.user.isVerified;
+    const isVerifiedUser = effectiveUser && effectiveUser.isVerified;
+    const metadataUserId = effectiveUser ? effectiveUser._id.toString() : "";
+    console.log(
+      `[createPaymentSession] Storing in Stripe metadata: userId=${metadataUserId || "empty"}, userIsVerified=${isVerifiedUser} (webhook will use for receipt vs verification email)`
+    );
 
     const successUrl = isVerifiedUser
       ? `${
@@ -698,7 +715,7 @@ export const createPaymentSession = async (req, res) => {
         }/managed-services/${requestId}?payment=success`
       : `${
           process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004"
-        }/check-email?email=${encodeURIComponent(email.trim())}`;
+        }/check-email?email=${encodeURIComponent(effectiveEmail)}`;
 
     // Create Stripe checkout session
     const sessionParams = {
@@ -709,11 +726,15 @@ export const createPaymentSession = async (req, res) => {
         process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004"
       }/managed-services/payment/${requestId}?canceled=true`,
       client_reference_id: requestId.toString(),
-      customer_email: email.trim(),
+      customer_email: effectiveEmail,
       metadata: {
         requestId: requestId.toString(),
         type: "managed_service",
-        verificationToken, // Store verification token in metadata for webhook
+        verificationToken,
+        // Store verification status at payment creation time so the webhook
+        // can decide which email to send without any DB lookup or guessing.
+        userIsVerified: isVerifiedUser ? "true" : "false",
+        userId: metadataUserId,
       },
       line_items: [
         {
@@ -736,31 +757,41 @@ export const createPaymentSession = async (req, res) => {
     request.serviceFeePaymentId = session.id;
     await request.save();
 
-    // Create pending Payment record for auto-sync
+    // Upsert the pending Payment record: if one already exists for this managed service
+    // (from a previously abandoned session), update it with the new session ID rather
+    // than creating another pending record. This prevents syncPaymentsForUser from
+    // turning multiple orphaned pending records into multiple "succeeded" transactions.
     const Payment = (await import("../../models/customer/Payment.js")).default;
-    const payment = new Payment({
+    let pendingPayment = await Payment.findOne({
       requestId: request._id,
-      matchReportId: null,
-      email: email.trim().toLowerCase(),
-      amount: amount / 100, // Convert cents to dollars
-      currency: "usd",
       planType: "managed_service",
       status: "pending",
-      stripePaymentIntentId: null, // Will be updated by webhook or sync
-      // Store session ID in a way we can find it?
-      // Payment model usually has stripePaymentIntentId.
-      // We can store session ID temporarily or rely on email + requestId?
-      // Actually syncPaymentsForUser checks stripePaymentIntentId.
-      // We don't have intent ID yet (it's in session).
-      // But we can store session ID in stripeSubscriptionId field temporarily or add a field?
-      // Or just rely on authController to find it via session list if intent is missing?
-      // authController's syncPaymentsForUser has a fallback to list sessions.
     });
-    // Attempt to get payment intent if available immediately (unlikely for checkout)
-    if (session.payment_intent && typeof session.payment_intent === "string") {
-      payment.stripePaymentIntentId = session.payment_intent;
+    if (pendingPayment) {
+      pendingPayment.stripeSessionId = session.id;
+      pendingPayment.email = effectiveEmail;
+      pendingPayment.amount = amount / 100;
+      if (session.payment_intent && typeof session.payment_intent === "string") {
+        pendingPayment.stripePaymentIntentId = session.payment_intent;
+      }
+      await pendingPayment.save();
+    } else {
+      pendingPayment = new Payment({
+        requestId: request._id,
+        matchReportId: null,
+        email: effectiveEmail,
+        amount: amount / 100,
+        currency: "usd",
+        planType: "managed_service",
+        status: "pending",
+        stripeSessionId: session.id,
+        stripePaymentIntentId:
+          session.payment_intent && typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : null,
+      });
+      await pendingPayment.save();
     }
-    await payment.save();
 
     res.json({
       success: true,
@@ -825,14 +856,18 @@ export const syncPaymentStatus = async (req, res) => {
         );
 
         if (session.payment_status === "paid" && session.payment_intent) {
+          // Track whether this is the first time we're confirming this payment
+          // so we know whether to send the email and create the Payment record.
+          const isFirstPaymentConfirmation =
+            managedService.serviceFeeStatus !== "paid";
+
           // Update managed service status
           managedService.serviceFeeStatus = "paid";
-          managedService.serviceFeePaymentId = session.payment_intent; // Update to payment intent ID
+          managedService.serviceFeePaymentId = session.payment_intent;
           managedService.serviceFeePaidAt = new Date();
           managedService.status = "in_progress";
-          managedService.stage = "review"; // First step after payment - admin review
+          managedService.stage = "review";
 
-          // Link to user if not already linked
           if (!managedService.userId) {
             managedService.userId = req.user._id;
           }
@@ -840,8 +875,93 @@ export const syncPaymentStatus = async (req, res) => {
           await managedService.save();
 
           console.log(
-            `[syncPaymentStatus] Successfully synced service fee payment for managed service ${managedService._id}`
+            `[syncPaymentStatus] Successfully synced service fee payment for managed service ${managedService._id}, isFirstPaymentConfirmation: ${isFirstPaymentConfirmation}`
           );
+
+          if (isFirstPaymentConfirmation) {
+            // Upsert the Payment record so the transaction appears in history
+            // immediately on return from Stripe, without waiting for a webhook.
+            // Check by BOTH stripeSessionId and requestId+succeeded so we don't
+            // create a duplicate if the webhook already created a succeeded record.
+            const existingPayment = await Payment.findOne({
+              $or: [
+                { stripeSessionId: session.id, planType: "managed_service" },
+                {
+                  requestId: managedService._id,
+                  planType: "managed_service",
+                  status: "succeeded",
+                },
+              ],
+            });
+
+            let confirmedPaymentId;
+            if (existingPayment) {
+              if (existingPayment.status !== "succeeded") {
+                existingPayment.status = "succeeded";
+                existingPayment.stripePaymentIntentId = session.payment_intent;
+                existingPayment.paidAt = new Date(session.created * 1000);
+                await existingPayment.save();
+                console.log(
+                  `[syncPaymentStatus] Updated existing Payment ${existingPayment._id} to succeeded`
+                );
+              }
+              confirmedPaymentId = existingPayment._id.toString();
+            } else {
+              const newPayment = new Payment({
+                requestId: managedService._id,
+                email: req.user.email.toLowerCase(),
+                amount: managedService.serviceFeeAmount || 0,
+                currency: "usd",
+                planType: "managed_service",
+                status: "succeeded",
+                stripePaymentIntentId: session.payment_intent,
+                stripeSessionId: session.id,
+                paidAt: new Date(session.created * 1000),
+              });
+              await newPayment.save();
+              confirmedPaymentId = newPayment._id.toString();
+              console.log(
+                `[syncPaymentStatus] Created new Payment ${newPayment._id} for managed service ${managedService._id}`
+              );
+            }
+
+            // Atomic "claim" for sending the payment email — only one of sync or webhook may send.
+            const emailClaimed = await ManagedService.findOneAndUpdate(
+              {
+                _id: managedService._id,
+                $or: [
+                  { serviceFeeEmailSentAt: null },
+                  { serviceFeeEmailSentAt: { $exists: false } },
+                ],
+              },
+              { $set: { serviceFeeEmailSentAt: new Date() } },
+              { new: true }
+            );
+            if (emailClaimed && req.user.isVerified) {
+              try {
+                await sendManagedServiceReceiptEmail({
+                  email: req.user.email,
+                  requestId: managedService._id.toString(),
+                  transactionId: confirmedPaymentId,
+                  itemName: managedService.itemName,
+                  category: managedService.category,
+                  serviceFeeAmount: managedService.serviceFeeAmount,
+                });
+                console.log(
+                  `[syncPaymentStatus] Sent receipt email to ${req.user.email}`
+                );
+              } catch (emailError) {
+                console.error(
+                  "[syncPaymentStatus] Error sending receipt email:",
+                  emailError
+                );
+              }
+            } else if (!emailClaimed) {
+              console.log(
+                `[syncPaymentStatus] Payment email already sent for ${managedService._id}, skipping`
+              );
+            }
+          }
         }
       } catch (stripeError) {
         console.error(

@@ -44,6 +44,26 @@ export const syncPaymentsForUser = async (user) => {
         try {
           let updated = false;
 
+          // For managed service payments, if a succeeded record already exists for this
+          // managed service, this pending record is an orphan (from an abandoned session).
+          // Cancel it so it never appears as a duplicate transaction.
+          if (
+            (payment.planType === "managed_service" ||
+              payment.planType === "managed_service_savings_fee") &&
+            payment.requestId
+          ) {
+            const alreadySucceeded = await Payment.findOne({
+              requestId: payment.requestId,
+              planType: payment.planType,
+              status: "succeeded",
+            });
+            if (alreadySucceeded) {
+              payment.status = "canceled";
+              await payment.save();
+              continue;
+            }
+          }
+
           if (payment.stripePaymentIntentId) {
             const paymentIntent = await stripe.paymentIntents.retrieve(
               payment.stripePaymentIntentId
@@ -77,15 +97,88 @@ export const syncPaymentsForUser = async (user) => {
               );
               payment.status = "succeeded";
               payment.stripePaymentIntentId = matchingSession.payment_intent;
+              payment.stripeSessionId = matchingSession.id;
               payment.stripeCustomerId = matchingSession.customer;
               payment.stripeSubscriptionId = matchingSession.subscription;
-              payment.paidAt = new Date();
+              // Use the session's actual payment timestamp instead of "now" so the
+              // transaction history shows the real payment time.
+              payment.paidAt = matchingSession.created
+                ? new Date(matchingSession.created * 1000)
+                : new Date();
               await payment.save();
               updated = true;
             }
           }
 
           if (updated) {
+            // When a managed service payment is confirmed, also mark the managed service
+            // itself as paid so the webhook idempotency guard fires on future retries.
+            // Without this, ManagedService.serviceFeeStatus stays "pending_payment" and
+            // every Stripe webhook retry slips past the guard and creates duplicate records.
+            if (
+              payment.planType === "managed_service" &&
+              payment.requestId
+            ) {
+              try {
+                const ManagedService = (
+                  await import("../../models/customer/ManagedService.js")
+                ).default;
+                await ManagedService.findOneAndUpdate(
+                  {
+                    _id: payment.requestId,
+                    serviceFeeStatus: { $ne: "paid" },
+                  },
+                  {
+                    $set: {
+                      serviceFeeStatus: "paid",
+                      status: "in_progress",
+                      stage: "review",
+                      serviceFeePaidAt: payment.paidAt || new Date(),
+                    },
+                  }
+                );
+                console.log(
+                  `[sync] Updated ManagedService ${payment.requestId} serviceFeeStatus to paid`
+                );
+              } catch (msErr) {
+                console.error(
+                  "[sync] Failed to update ManagedService status:",
+                  msErr
+                );
+              }
+            }
+
+            if (
+              payment.planType === "managed_service_savings_fee" &&
+              payment.requestId
+            ) {
+              try {
+                const ManagedService = (
+                  await import("../../models/customer/ManagedService.js")
+                ).default;
+                await ManagedService.findOneAndUpdate(
+                  {
+                    _id: payment.requestId,
+                    savingsFeeStatus: { $ne: "paid" },
+                  },
+                  {
+                    $set: {
+                      savingsFeeStatus: "paid",
+                      savingsFeePaidAt: payment.paidAt || new Date(),
+                    },
+                  }
+                );
+                console.log(
+                  `[sync] Updated ManagedService ${payment.requestId} savingsFeeStatus to paid`
+                );
+              } catch (msErr) {
+                console.error(
+                  "[sync] Failed to update ManagedService savings status:",
+                  msErr
+                );
+              }
+            }
+
             // Update subscription if needed
             const isSubscriptionPlan = [
               "starter_monthly",

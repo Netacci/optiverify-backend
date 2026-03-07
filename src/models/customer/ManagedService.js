@@ -127,6 +127,11 @@ const ManagedServiceSchema = new mongoose.Schema(
     serviceFeePaidAt: {
       type: Date,
     },
+    // Set when we send any payment email (receipt or verification) for this service fee.
+    // Used so only one code path (webhook or syncPaymentStatus) sends, and webhook retries never resend.
+    serviceFeeEmailSentAt: {
+      type: Date,
+    },
 
     // Financials - Savings Fee (The 8%)
     originalPrice: {
@@ -172,31 +177,39 @@ const ManagedServiceSchema = new mongoose.Schema(
     // Final Report (What customer sees when report is ready)
     finalReport: {
       supplierDetails: [
-        {
-          supplierId: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "Supplier",
+        new mongoose.Schema(
+          {
+            supplierId: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: "Supplier",
+            },
+            supplierName: { type: String },
+            location: { type: String },
+            contactEmail: { type: String },
+            contactPhone: { type: String },
+            quoteAmount: { type: Number },
+            negotiatedAmount: { type: Number },
+            currency: { type: String, default: "USD" },
+            leadTime: { type: String },
+            minimumOrderQuantity: { type: String },
+            notes: { type: String },
+            isRecommended: { type: Boolean, default: false },
+            uploadedDocuments: [
+              {
+                name: { type: String }, // Optional user label
+                fileName: { type: String }, // Original file name
+                type: { type: String }, // MIME type
+                url: { type: String }, // Server path
+              },
+            ],
           },
-          supplierName: String,
-          location: String,
-          contactEmail: String,
-          contactPhone: String,
-          quoteAmount: Number, // Initial quote from supplier
-          negotiatedAmount: Number, // Final negotiated price
-          currency: { type: String, default: "USD" },
-          leadTime: String,
-          minimumOrderQuantity: String,
-          notes: String,
-          isRecommended: { type: Boolean, default: false },
-          images: [String], // URLs to images
-          documents: [String], // URLs to documents
-          quoteDocument: String, // URL to uploaded quote document
-        },
+          { _id: false }
+        ),
       ],
-      summary: String, // Overall summary of findings
-      recommendations: String, // Admin's recommendations
-      additionalNotes: String, // Any additional notes
-      reportGeneratedAt: Date,
+      summary: { type: String }, // Overall summary of findings
+      recommendations: { type: String }, // Admin's recommendations
+      additionalNotes: { type: String }, // Any additional notes
+      reportGeneratedAt: { type: Date },
       reportGeneratedBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Admin",

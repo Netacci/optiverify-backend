@@ -585,12 +585,17 @@ export const getRequestDetails = async (req, res) => {
  */
 export const getSubscriptionStatus = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select("-password");
+    const user = await User.findById(req.user._id);
 
-    const isActive =
+    // Check if subscription has expired and update if needed
+    if (
       user.subscriptionStatus === "active" &&
-      (!user.subscriptionExpiresAt ||
-        new Date(user.subscriptionExpiresAt) > new Date());
+      user.subscriptionExpiresAt &&
+      new Date(user.subscriptionExpiresAt) < new Date()
+    ) {
+      user.subscriptionStatus = "expired";
+      await user.save();
+    }
 
     res.json({
       success: true,

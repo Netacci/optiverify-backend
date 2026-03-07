@@ -10,6 +10,8 @@ import {
   updateAdmin,
   deleteAdmin,
   getDashboardStats,
+  getAllTransactionsAdmin,
+  getTransactionByIdAdmin,
 } from "../../controllers/admin/adminController.js";
 import {
   getSuppliers,
@@ -30,6 +32,10 @@ router.use(authenticateAdmin);
 
 // Dashboard stats
 router.get("/stats", requireAdmin, getDashboardStats);
+
+// Transactions (all users)
+router.get("/transactions", requireAdmin, getAllTransactionsAdmin);
+router.get("/transactions/:transactionId", requireAdmin, getTransactionByIdAdmin);
 
 // Suppliers
 router.get("/suppliers", requireAdmin, getSuppliers);

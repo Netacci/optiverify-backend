@@ -281,6 +281,179 @@ export const getManagedServiceSavingsFeeReceipt = async (req, res) => {
 };
 
 /**
+ * Get a single transaction receipt by ID
+ */
+export const getReceiptById = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const user = await User.findById(req.user._id);
+
+    // Find the payment record — do NOT populate requestId because for managed service payments
+    // it points to a ManagedService (not a BuyerRequest), and populate would set it to null.
+    const payment = await Payment.findOne({
+      _id: transactionId,
+      status: "succeeded",
+    });
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: "Transaction not found",
+      });
+    }
+
+    // Verify user owns this transaction
+    const isOwner =
+      payment.email.toLowerCase() === user.email.toLowerCase();
+
+    if (!isOwner) {
+      // For managed services, also check ownership through the managed service
+      if (
+        payment.planType === "managed_service" ||
+        payment.planType === "managed_service_savings_fee"
+      ) {
+        if (payment.requestId) {
+          const managedService = await ManagedService.findById(payment.requestId);
+          if (
+            !managedService ||
+            (managedService.userId?.toString() !== user._id.toString() &&
+              managedService.email.toLowerCase() !== user.email.toLowerCase())
+          ) {
+            return res.status(403).json({
+              success: false,
+              message: "Access denied",
+            });
+          }
+        } else {
+          return res.status(403).json({
+            success: false,
+            message: "Access denied",
+          });
+        }
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied",
+        });
+      }
+    }
+
+    // Get Stripe payment details if available
+    let stripeDetails = null;
+    if (payment.stripePaymentIntentId && stripe) {
+      try {
+        const paymentIntent = await stripe.paymentIntents.retrieve(
+          payment.stripePaymentIntentId
+        );
+        stripeDetails = {
+          paymentIntentId: paymentIntent.id,
+          receiptUrl: paymentIntent.charges?.data[0]?.receipt_url || null,
+          billingDetails: paymentIntent.charges?.data[0]?.billing_details || null,
+        };
+      } catch (stripeError) {
+        console.error("Error fetching Stripe details:", stripeError);
+      }
+    }
+
+    // Format receipt data based on type
+    let receipt;
+
+    if (payment.planType === "managed_service_savings_fee") {
+      const managedService = await ManagedService.findById(payment.requestId);
+      receipt = {
+        id: payment._id,
+        type: "managed_service_savings_fee",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        service: {
+          id: managedService?._id,
+          category: managedService?.category,
+          savingsAmount: managedService?.savingsAmount,
+          savingsFeePercentage: managedService?.savingsFeePercentage,
+        },
+        stripe: stripeDetails,
+      };
+    } else if (payment.planType === "extra_credit") {
+      const quantity = Math.floor(payment.amount / 10);
+      receipt = {
+        id: payment._id,
+        type: "top_up",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        credits: quantity,
+        description: `Top-up: ${quantity} credit${quantity > 1 ? 's' : ''}`,
+        stripe: stripeDetails,
+      };
+    } else if (payment.planType === "managed_service") {
+      const managedService = await ManagedService.findById(payment.requestId);
+      receipt = {
+        id: payment._id,
+        type: "managed_service",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        service: {
+          id: payment.requestId,
+          itemName: managedService?.itemName,
+          category: managedService?.category,
+        },
+        stripe: stripeDetails,
+      };
+    } else {
+      // match_report — manually look up related docs since we removed populate above
+      const buyerRequest = payment.requestId
+        ? await BuyerRequest.findById(payment.requestId).lean()
+        : null;
+      const matchReport = payment.matchReportId
+        ? await MatchReport.findById(payment.matchReportId).lean()
+        : null;
+      receipt = {
+        id: payment._id,
+        type: "match_report",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        request: {
+          id: buyerRequest?._id || payment.requestId,
+          name: buyerRequest?.name,
+          category: buyerRequest?.category,
+          specifications: buyerRequest?.specifications,
+        },
+        matchReport: {
+          id: matchReport?._id,
+          status: matchReport?.status,
+        },
+        stripe: stripeDetails,
+      };
+    }
+
+    res.json({
+      success: true,
+      data: receipt,
+    });
+  } catch (error) {
+    console.error("Error fetching receipt by ID:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+/**
  * Get all transactions (receipts) for the current user with pagination
  */
 export const getAllReceipts = async (req, res) => {
@@ -293,16 +466,13 @@ export const getAllReceipts = async (req, res) => {
     const receipts = [];
 
     // Get all payment receipts (including savings fee payments)
-    // First, get payments by email match
+    // First, get payments by email match — do NOT populate requestId here because for managed
+    // service payments the requestId points to a ManagedService (not a BuyerRequest), and
+    // Mongoose would set it to null after a failed populate, breaking the ManagedService lookup.
     const paymentsByEmail = await Payment.find({
       email: { $regex: new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
       status: "succeeded",
-    })
-      .populate({
-        path: "requestId",
-        options: { strictPopulate: false }, // Allow null requestId (for top-up payments)
-      })
-      .sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 });
 
     // Also get all managed service payments and filter by ownership
     const allManagedServicePayments = await Payment.find({
@@ -344,8 +514,10 @@ export const getAllReceipts = async (req, res) => {
           planType: payment.planType,
           paidAt: payment.paidAt || payment.createdAt,
           createdAt: payment.createdAt,
+          paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
           service: {
             id: managedService?._id,
+            itemName: managedService?.itemName,
             category: managedService?.category,
           },
         });
@@ -360,49 +532,62 @@ export const getAllReceipts = async (req, res) => {
           planType: payment.planType,
           paidAt: payment.paidAt || payment.createdAt,
           createdAt: payment.createdAt,
+          paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
           credits: quantity,
           description: `Top-up: ${quantity} credit${quantity > 1 ? 's' : ''}`,
         });
       } else {
-        receipts.push({
-          id: payment._id,
-          type: payment.planType === "managed_service" ? "managed_service" : "match_report",
-          amount: payment.amount,
-          currency: payment.currency || "usd",
-          planType: payment.planType,
-          paidAt: payment.paidAt || payment.createdAt,
-          createdAt: payment.createdAt,
-          request: {
-            id: payment.requestId?._id || payment.requestId,
-            category: payment.requestId?.category,
-          },
-        });
+        // Handle both managed_service and match_report
+        if (payment.planType === "managed_service") {
+          const managedService = await ManagedService.findById(payment.requestId);
+          receipts.push({
+            id: payment._id,
+            type: "managed_service",
+            amount: payment.amount,
+            currency: payment.currency || "usd",
+            planType: payment.planType,
+            paidAt: payment.paidAt || payment.createdAt,
+            createdAt: payment.createdAt,
+            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+            service: {
+              id: payment.requestId,
+              itemName: managedService?.itemName,
+              category: managedService?.category,
+            },
+          });
+        } else {
+          // Manually look up BuyerRequest since we removed the populate call above.
+          const buyerRequest = payment.requestId
+            ? await BuyerRequest.findById(payment.requestId).lean()
+            : null;
+          const matchReport = payment.matchReportId
+            ? await MatchReport.findById(payment.matchReportId).lean()
+            : null;
+          receipts.push({
+            id: payment._id,
+            type: "match_report",
+            amount: payment.amount,
+            currency: payment.currency || "usd",
+            planType: payment.planType,
+            paidAt: payment.paidAt || payment.createdAt,
+            createdAt: payment.createdAt,
+            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+            request: {
+              id: buyerRequest?._id || payment.requestId,
+              name: buyerRequest?.name,
+              category: buyerRequest?.category,
+            },
+            matchReport: {
+              id: matchReport?._id,
+              status: matchReport?.status,
+            },
+          });
+        }
       }
     }
 
-    // Get managed service receipts
-    const managedServices = await ManagedService.find({
-      $or: [
-        { userId: user._id },
-        { email: { $regex: new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }
-      ],
-      serviceFeeStatus: "paid",
-    }).sort({ createdAt: -1 });
-
-    for (const service of managedServices) {
-      receipts.push({
-        id: service._id,
-        type: "managed_service",
-        amount: service.serviceFeeAmount,
-        currency: "usd",
-        paidAt: service.serviceFeePaidAt || service.createdAt,
-        createdAt: service.createdAt,
-        service: {
-          id: service._id,
-          category: service.category,
-        },
-      });
-    }
+    // Note: Managed service receipts are already added from the Payment collection above.
+    // We don't need to fetch from ManagedService collection as it would cause duplicates.
 
     // Sort all receipts by date (newest first)
     receipts.sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt));

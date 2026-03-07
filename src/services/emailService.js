@@ -490,6 +490,99 @@ export const sendPasswordResetEmail = async ({ email, resetToken }) => {
 };
 
 /**
+ * Send managed service payment receipt email
+ * For users who are already verified - shows payment details instead of verification
+ */
+export const sendManagedServiceReceiptEmail = async ({
+  email,
+  requestId,
+  transactionId,
+  itemName,
+  category,
+  serviceFeeAmount,
+}) => {
+  const formattedAmount = Number(serviceFeeAmount).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: email,
+      subject: `Payment Receipt - Managed Service Request #${requestId.slice(-8)}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Payment Receipt</title>
+          </head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0; font-size: 28px;">Payment Confirmed!</h1>
+            </div>
+
+            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+              <p style="font-size: 16px; margin-bottom: 20px;">
+                Thank you for your payment! Your managed service request has been received and your sourcing team is reviewing it.
+              </p>
+
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #667eea;">
+                <p style="margin: 0 0 15px 0; font-size: 14px; color: #6b7280;">
+                  <strong>Receipt Details:</strong>
+                </p>
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong>Transaction ID:</strong> ${transactionId || requestId.slice(-8)}
+                </p>
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong>Item:</strong> ${itemName}
+                </p>
+                ${category ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;"><strong>Category:</strong> ${category}</p>` : ""}
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
+                  <strong>Reference:</strong> #${requestId.slice(-8)}
+                </p>
+                <p style="margin: 0; font-size: 14px; color: #374151;">
+                  <strong>Amount:</strong> $${formattedAmount}
+                </p>
+              </div>
+
+              <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #0ea5e9;">
+                <p style="margin: 0; font-size: 14px; color: #0c4a6e;">
+                  <strong>What's Next?</strong><br>
+                  Our sourcing team will review your request and begin matching it with qualified suppliers. You'll receive updates via email as progress is made.
+                </p>
+              </div>
+
+              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
+                <strong>Log in to your dashboard</strong> to track the status of your request and view supplier matches as they become available.
+              </p>
+            </div>
+
+            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="font-size: 12px; color: #9ca3af;">
+                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error("Resend error:", error);
+      throw error;
+    }
+
+    console.log(`✅ Managed service receipt email sent to ${email}`);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending managed service receipt email:", error);
+    throw error;
+  }
+};
+
+/**
  * Send contact form email to support
  */
 export const sendContactEmail = async ({

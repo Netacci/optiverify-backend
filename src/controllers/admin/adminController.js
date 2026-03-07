@@ -2,6 +2,8 @@ import User from "../../models/common/User.js";
 import Admin from "../../models/admin/Admin.js";
 import Feedback from "../../models/customer/Feedback.js";
 import Supplier from "../../models/admin/Supplier.js";
+import Payment from "../../models/customer/Payment.js";
+import ManagedService from "../../models/customer/ManagedService.js";
 
 /**
  * Middleware to check admin access
@@ -65,10 +67,18 @@ export const getUsers = async (req, res) => {
       User.countDocuments(query),
     ]);
 
+    // Check and update subscription status for expired subscriptions
+    const { checkAndUpdateMultipleSubscriptions } = await import(
+      "../../services/subscriptionService.js"
+    );
+    const usersWithUpdatedStatus = await checkAndUpdateMultipleSubscriptions(
+      users
+    );
+
     res.json({
       success: true,
       data: {
-        users,
+        users: usersWithUpdatedStatus,
         pagination: {
           page,
           limit,
@@ -328,6 +338,254 @@ export const deleteAdmin = async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting admin:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+/**
+ * Get a single transaction by ID (admin - no ownership check)
+ */
+export const getTransactionByIdAdmin = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    // Find the payment record
+    const payment = await Payment.findOne({
+      _id: transactionId,
+      status: "succeeded",
+    })
+      .populate({
+        path: "requestId",
+        options: { strictPopulate: false },
+      })
+      .populate("matchReportId");
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: "Transaction not found",
+      });
+    }
+
+    // Build receipt based on payment type
+    let receipt = null;
+    let stripeDetails = null;
+
+    if (payment.planType === "managed_service_savings_fee") {
+      const managedService = await ManagedService.findById(payment.requestId);
+      receipt = {
+        id: payment._id,
+        type: "managed_service_savings_fee",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        email: payment.email,
+        service: {
+          id: managedService?._id,
+          itemName: managedService?.itemName,
+          category: managedService?.category,
+          savingsAmount: managedService?.savingsAmount,
+          savingsFeePercentage: managedService?.savingsFeePercentage,
+        },
+      };
+    } else if (payment.planType === "extra_credit") {
+      const quantity = Math.floor(payment.amount / 10);
+      receipt = {
+        id: payment._id,
+        type: "top_up",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        email: payment.email,
+        credits: quantity,
+        description: `Top-up: ${quantity} credit${quantity > 1 ? 's' : ''}`,
+      };
+    } else if (payment.planType === "managed_service") {
+      const managedService = await ManagedService.findById(payment.requestId);
+      receipt = {
+        id: payment._id,
+        type: "managed_service",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        email: payment.email,
+        service: {
+          id: payment.requestId,
+          itemName: managedService?.itemName,
+          category: managedService?.category,
+          finalReport: managedService?.finalReport,
+        },
+      };
+    } else {
+      receipt = {
+        id: payment._id,
+        type: "match_report",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        email: payment.email,
+        request: {
+          id: payment.requestId?._id,
+          name: payment.requestId?.name,
+          category: payment.requestId?.category,
+          specifications: payment.requestId?.specifications,
+        },
+        matchReport: {
+          id: payment.matchReportId?._id,
+          status: payment.matchReportId?.status,
+        },
+      };
+    }
+
+    res.json({
+      success: true,
+      data: receipt,
+    });
+  } catch (error) {
+    console.error("Error fetching transaction by ID:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+/**
+ * Get all transactions from all users (for admin)
+ */
+export const getAllTransactionsAdmin = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const receipts = [];
+
+    // Get all succeeded payments
+    const allPayments = await Payment.find({
+      status: "succeeded",
+    })
+      .populate({
+        path: "requestId",
+        options: { strictPopulate: false },
+      })
+      .populate("matchReportId")
+      .sort({ createdAt: -1 });
+
+    // Process each payment
+    for (const payment of allPayments) {
+      if (payment.planType === "managed_service_savings_fee") {
+        const managedService = await ManagedService.findById(payment.requestId);
+        receipts.push({
+          id: payment._id,
+          type: "managed_service_savings_fee",
+          amount: payment.amount,
+          currency: payment.currency || "usd",
+          planType: payment.planType,
+          paidAt: payment.paidAt || payment.createdAt,
+          createdAt: payment.createdAt,
+          paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+          email: payment.email,
+          service: {
+            id: managedService?._id,
+            itemName: managedService?.itemName,
+            category: managedService?.category,
+          },
+        });
+      } else if (payment.planType === "extra_credit") {
+        const quantity = Math.floor(payment.amount / 10);
+        receipts.push({
+          id: payment._id,
+          type: "top_up",
+          amount: payment.amount,
+          currency: payment.currency || "usd",
+          planType: payment.planType,
+          paidAt: payment.paidAt || payment.createdAt,
+          createdAt: payment.createdAt,
+          paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+          email: payment.email,
+          credits: quantity,
+          description: `Top-up: ${quantity} credit${quantity > 1 ? 's' : ''}`,
+        });
+      } else {
+        // Handle both managed_service and match_report
+        if (payment.planType === "managed_service") {
+          const managedService = await ManagedService.findById(payment.requestId);
+          receipts.push({
+            id: payment._id,
+            type: "managed_service",
+            amount: payment.amount,
+            currency: payment.currency || "usd",
+            planType: payment.planType,
+            paidAt: payment.paidAt || payment.createdAt,
+            createdAt: payment.createdAt,
+            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+            email: payment.email,
+            service: {
+              id: payment.requestId,
+              itemName: managedService?.itemName,
+              category: managedService?.category,
+            },
+          });
+        } else {
+          receipts.push({
+            id: payment._id,
+            type: "match_report",
+            amount: payment.amount,
+            currency: payment.currency || "usd",
+            planType: payment.planType,
+            paidAt: payment.paidAt || payment.createdAt,
+            createdAt: payment.createdAt,
+            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+            email: payment.email,
+            request: {
+              id: payment.requestId?._id || payment.requestId,
+              name: payment.requestId?.name,
+              category: payment.requestId?.category,
+            },
+          });
+        }
+      }
+    }
+
+    // Sort by date (newest first)
+    receipts.sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt));
+
+    // Paginate
+    const total = receipts.length;
+    const paginatedReceipts = receipts.slice(skip, skip + limit);
+
+    res.json({
+      success: true,
+      data: {
+        transactions: paginatedReceipts,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching all transactions:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",

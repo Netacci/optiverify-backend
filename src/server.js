@@ -25,6 +25,7 @@ import adminCategoriesRouter from "./routes/admin/categories.js";
 import matchReportsRouter from "./routes/admin/matchReports.js";
 import receiptsRouter from "./routes/customer/receipts.js";
 import contactRouter from "./routes/common/contact.js";
+import uploadRouter from "./routes/common/upload.js";
 import { handleWebhook } from "./controllers/customer/paymentController.js";
 
 const app = express();
@@ -113,9 +114,12 @@ app.post(
   handleWebhook,
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());
+
+// Serve static files from uploads directory
+app.use("/uploads", express.static("uploads"));
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -127,6 +131,7 @@ app.get("/health", (req, res) => {
 });
 
 // API Routes
+app.use("/api/upload", uploadRouter);
 app.use("/api/requests", requestsRouter);
 app.use("/api/matches", matchesRouter);
 app.use("/api/payments", paymentsRouter);
@@ -144,7 +149,7 @@ app.use("/api/settings", publicSettingsRouter);
 app.use("/api/categories", categoriesRouter);
 app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/match-reports", matchReportsRouter);
-app.use("/api/receipts", receiptsRouter);
+app.use("/api/transactions", receiptsRouter);
 app.use("/api/contact", contactRouter);
 
 // 404 handler

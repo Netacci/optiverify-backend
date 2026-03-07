@@ -5,6 +5,7 @@ import {
   getManagedServiceReceipt,
   getManagedServiceSavingsFeeReceipt,
   getAllReceipts,
+  getReceiptById,
 } from "../../controllers/customer/receiptController.js";
 
 const router = express.Router();
@@ -23,6 +24,9 @@ router.get("/managed-service/:serviceId", getManagedServiceReceipt);
 
 // GET /api/receipts/managed-service/:serviceId/savings-fee - Get receipt for a managed service savings fee
 router.get("/managed-service/:serviceId/savings-fee", getManagedServiceSavingsFeeReceipt);
+
+// GET /api/receipts/:transactionId - Get a single transaction receipt by ID (must be last)
+router.get("/:transactionId", getReceiptById);
 
 export default router;
 

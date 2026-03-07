@@ -714,24 +714,70 @@ export const handleWebhook = async (req, res) => {
         const customerEmail = (session.customer_email || managedService.email)
           .toLowerCase()
           .trim();
-        console.log(`[Webhook] Customer email: ${customerEmail}`);
 
-        // Create or find user
-        let user = await User.findOne({ email: customerEmail });
+        // Read the verification status that was baked into the session metadata at
+        // payment-creation time — when req.user was available and 100% accurate.
+        // This is the source of truth for deciding which email to send; it removes
+        // all DB-lookup guessing and race conditions.
+        const wasUserVerifiedAtPayment = session.metadata?.userIsVerified === "true";
+        console.log(
+          `[Webhook] Customer email: ${customerEmail}, userIsVerified from metadata: ${wasUserVerifiedAtPayment}`
+        );
+
+        // Idempotency guard: if already fully processed, skip all updates and emails.
+        if (managedService.serviceFeeStatus === "paid") {
+          console.log(
+            `[Webhook] Managed service ${managedService._id} already processed (serviceFeeStatus=paid), skipping`
+          );
+          return res.json({ received: true });
+        }
+
+        const authenticatedUserId = session.metadata?.userId?.trim() || null;
+        const metadataUserIsVerified = session.metadata?.userIsVerified === "true";
+        console.log(
+          `[Webhook] session.metadata: userId=${authenticatedUserId ?? "null"}, userIsVerified=${metadataUserIsVerified}, keys=${Object.keys(session.metadata || {}).join(",")}`
+        );
+
+        let user = null;
+        if (managedService.userId) {
+          user = await User.findById(managedService.userId);
+        }
+        if (!user && authenticatedUserId) {
+          user = await User.findById(authenticatedUserId);
+        }
+        if (!user) {
+          user = await User.findOne({ email: customerEmail });
+        }
+        if (!user && managedService.email && managedService.email.toLowerCase() !== customerEmail.toLowerCase()) {
+          user = await User.findOne({ email: managedService.email.toLowerCase() });
+        }
+        if (!user && customerEmail) {
+          user = await User.findOne({
+            email: { $regex: new RegExp(`^${customerEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+          });
+        }
+
+        const isNewUser = !user;
+
         if (!user) {
           console.log(`[Webhook] Creating new user for: ${customerEmail}`);
-          // Create user if doesn't exist (will be verified when they create password)
           user = new User({
             email: customerEmail,
-            isVerified: true, // Mark as verified since payment succeeded
+            isVerified: false,
           });
           await user.save();
-        } else {
-          console.log(`[Webhook] Found existing user: ${user._id}`);
-          // Update existing user
-          user.isVerified = true;
-          await user.save();
         }
+
+        // Receipt vs verification: (1) metadata.userId means they were logged in at session creation → receipt.
+        // (2) metadata.userIsVerified or user.isVerified (from DB) → receipt. (3) Otherwise new user → verify email.
+        let sendReceipt =
+          !!authenticatedUserId || metadataUserIsVerified || (!isNewUser && user?.isVerified);
+        if (authenticatedUserId && user?.isVerified) {
+          sendReceipt = true; // userId in payload + DB says verified → always receipt
+        }
+        console.log(
+          `[Webhook] sendReceipt=${sendReceipt} (metadata.userId=${!!authenticatedUserId}, metadata.userIsVerified=${metadataUserIsVerified}, isNewUser=${isNewUser}, user.isVerified=${user?.isVerified}) → ${sendReceipt ? "receipt" : "verification"}`
+        );
 
         // Link managed service to user if not already linked
         if (
@@ -758,44 +804,128 @@ export const handleWebhook = async (req, res) => {
           `[Webhook] Successfully updated managed service ${managedService._id}. Status: ${managedService.status}, Stage: ${managedService.stage}`
         );
 
-        // Also create a Payment record for managed service (for consistency and receipts)
-        const managedServicePayment = new Payment({
-          requestId: managedService._id, // Use managed service ID as requestId
-          matchReportId: null, // Managed services don't have match reports
-          email: customerEmail,
-          amount: managedService.serviceFeeAmount || 0,
-          currency: "usd",
-          planType: "managed_service",
-          status: "succeeded",
-          stripePaymentIntentId: session.payment_intent,
-          stripeCustomerId: session.customer,
-          paidAt: new Date(),
+        // Deduplicate: never create a second succeeded Payment for this managed service.
+        // Check by stripeSessionId first, then by requestId + succeeded (catches old retries).
+        let existingPayment = await Payment.findOne({
+          $or: [
+            { stripeSessionId: session.id, planType: "managed_service" },
+            {
+              requestId: managedService._id,
+              planType: "managed_service",
+              status: "succeeded",
+            },
+          ],
         });
-        await managedServicePayment.save();
-        console.log(
-          `[Webhook] Created Payment record ${managedServicePayment._id} for managed service ${managedService._id}`
-        );
 
-        // Use verification token from metadata
-        const verificationToken =
-          session.metadata?.verificationToken ||
-          generateTokenService(
-            customerEmail,
-            managedService._id.toString(),
-            "verification"
-          );
+        let isFirstProcessing = false;
+        let confirmedPaymentId;
 
-        // Send payment confirmation + verification email
-        try {
-          const { sendPaymentAndVerificationEmail } = await import(
-            "../../services/emailService.js"
+        if (existingPayment) {
+          if (existingPayment.status !== "succeeded") {
+            isFirstProcessing = true;
+            existingPayment.status = "succeeded";
+            existingPayment.stripePaymentIntentId = session.payment_intent;
+            existingPayment.stripeCustomerId = session.customer;
+            existingPayment.paidAt = new Date(session.created * 1000);
+            await existingPayment.save();
+          }
+          confirmedPaymentId = existingPayment._id.toString();
+          console.log(
+            `[Webhook] Found existing Payment ${existingPayment._id}, isFirstProcessing: ${isFirstProcessing}`
           );
-          await sendPaymentAndVerificationEmail({
-            email: customerEmail,
-            requestId: managedService._id.toString(),
+        } else {
+          // Before creating, double-check no succeeded Payment exists for this requestId
+          // (e.g. from syncPaymentStatus or a prior webhook). Prevents duplicate transactions.
+          const alreadySucceeded = await Payment.findOne({
+            requestId: managedService._id,
             planType: "managed_service",
-            verificationToken,
+            status: "succeeded",
           });
+          if (alreadySucceeded) {
+            confirmedPaymentId = alreadySucceeded._id.toString();
+            isFirstProcessing = false;
+            console.log(
+              `[Webhook] Skipping Payment create — succeeded record already exists (${alreadySucceeded._id}), avoiding duplicate transaction`
+            );
+          } else {
+            isFirstProcessing = true;
+            const managedServicePayment = new Payment({
+              requestId: managedService._id,
+              matchReportId: null,
+              email: customerEmail,
+              amount: managedService.serviceFeeAmount || 0,
+              currency: "usd",
+              planType: "managed_service",
+              status: "succeeded",
+              stripePaymentIntentId: session.payment_intent,
+              stripeSessionId: session.id,
+              stripeCustomerId: session.customer,
+              paidAt: new Date(session.created * 1000),
+            });
+            await managedServicePayment.save();
+            confirmedPaymentId = managedServicePayment._id.toString();
+            console.log(
+              `[Webhook] Created Payment ${managedServicePayment._id} for managed service ${managedService._id}`
+            );
+          }
+        }
+
+        // Only send email on the very first successful processing
+        if (!isFirstProcessing) {
+          console.log(`[Webhook] Payment already processed, skipping email`);
+          return res.json({ received: true });
+        }
+
+        // Atomic "claim" for sending the payment email: only one process (webhook or
+        // syncPaymentStatus) may send. Prevents duplicate emails from races and retries.
+        const claimed = await ManagedService.findOneAndUpdate(
+          {
+            _id: managedService._id,
+            $or: [
+              { serviceFeeEmailSentAt: null },
+              { serviceFeeEmailSentAt: { $exists: false } },
+            ],
+          },
+          { $set: { serviceFeeEmailSentAt: new Date() } },
+          { new: true }
+        );
+        if (!claimed) {
+          console.log(
+            `[Webhook] Payment email already sent for ${managedService._id}, skipping`
+          );
+          return res.json({ received: true });
+        }
+
+        const recipientEmail = user?.email || customerEmail;
+        try {
+          if (sendReceipt) {
+            const { sendManagedServiceReceiptEmail } = await import(
+              "../../services/emailService.js"
+            );
+            await sendManagedServiceReceiptEmail({
+              email: recipientEmail,
+              requestId: managedService._id.toString(),
+              transactionId: confirmedPaymentId,
+              itemName: managedService.itemName,
+              category: managedService.category,
+              serviceFeeAmount: managedService.serviceFeeAmount,
+            });
+          } else {
+            const verificationToken = generateTokenService(
+              customerEmail,
+              managedService._id.toString(),
+              "verification"
+            );
+            const { sendPaymentAndVerificationEmail } = await import(
+              "../../services/emailService.js"
+            );
+            await sendPaymentAndVerificationEmail({
+              email: recipientEmail,
+              requestId: managedService._id.toString(),
+              planType: "managed_service",
+              verificationToken,
+            });
+          }
         } catch (emailError) {
           console.error("Failed to send email:", emailError);
         }
@@ -835,6 +965,14 @@ export const handleWebhook = async (req, res) => {
           `[Webhook] Processing savings fee payment for: ${customerEmail}`
         );
 
+        // Idempotency guard: skip if savings fee already processed to prevent duplicates on retries.
+        if (managedService.savingsFeeStatus === "paid") {
+          console.log(
+            `[Webhook] Savings fee for managed service ${managedService._id} already processed, skipping`
+          );
+          return res.json({ received: true });
+        }
+
         // Update managed service savings fee status
         managedService.savingsFeeStatus = "paid";
         managedService.savingsFeePaymentId = session.payment_intent;
@@ -845,22 +983,42 @@ export const handleWebhook = async (req, res) => {
         );
 
         // Create Payment record for savings fee
-        const savingsFeePayment = new Payment({
-          requestId: managedService._id,
-          matchReportId: null,
-          email: customerEmail,
-          amount: managedService.savingsFeeAmount || 0,
-          currency: "usd",
+        // Check if Payment record already exists for this session to prevent duplicates
+        let existingSavingsFeePayment = await Payment.findOne({
+          stripeSessionId: session.id,
           planType: "managed_service_savings_fee",
-          status: "succeeded",
-          stripePaymentIntentId: session.payment_intent,
-          stripeCustomerId: session.customer,
-          paidAt: new Date(),
         });
-        await savingsFeePayment.save();
-        console.log(
-          `[Webhook] Created Payment record ${savingsFeePayment._id} for savings fee payment`
-        );
+
+        if (existingSavingsFeePayment) {
+          // Update existing pending payment to succeeded
+          console.log(
+            `[Webhook] Found existing Payment record ${existingSavingsFeePayment._id}, updating to succeeded`
+          );
+          existingSavingsFeePayment.status = "succeeded";
+          existingSavingsFeePayment.stripePaymentIntentId = session.payment_intent;
+          existingSavingsFeePayment.stripeCustomerId = session.customer;
+          existingSavingsFeePayment.paidAt = new Date();
+          await existingSavingsFeePayment.save();
+        } else {
+          // Create new Payment record if none exists
+          const savingsFeePayment = new Payment({
+            requestId: managedService._id,
+            matchReportId: null,
+            email: customerEmail,
+            amount: managedService.savingsFeeAmount || 0,
+            currency: "usd",
+            planType: "managed_service_savings_fee",
+            status: "succeeded",
+            stripePaymentIntentId: session.payment_intent,
+            stripeSessionId: session.id,
+            stripeCustomerId: session.customer,
+            paidAt: new Date(),
+          });
+          await savingsFeePayment.save();
+          console.log(
+            `[Webhook] Created Payment record ${savingsFeePayment._id} for savings fee payment`
+          );
+        }
 
         return res.json({ received: true });
       }
