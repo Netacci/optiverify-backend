@@ -543,11 +543,16 @@ export const getPreview = async (req, res) => {
         previewSupplier: matchReport.preview.previewSupplier
           ? {
               name: matchReport.preview.previewSupplier.name,
+              category: matchReport.preview.previewSupplier.category,
+              subCategory: matchReport.preview.previewSupplier.subCategory,
               location: matchReport.preview.previewSupplier.location,
+              stateRegion: matchReport.preview.previewSupplier.stateRegion,
               description: matchReport.preview.previewSupplier.description,
               certifications:
                 matchReport.preview.previewSupplier.certifications,
               leadTime: matchReport.preview.previewSupplier.leadTime,
+              dataSource: matchReport.preview.previewSupplier.dataSource,
+              lastVerifiedDate: matchReport.preview.previewSupplier.lastVerifiedDate,
               categoryFit,
               capabilityFit,
             }

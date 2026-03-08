@@ -1,5 +1,20 @@
 import mongoose from "mongoose";
 
+const SubcategorySchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: true }
+);
+
 const CategorySchema = new mongoose.Schema(
   {
     name: {
@@ -15,6 +30,10 @@ const CategorySchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    subcategories: {
+      type: [SubcategorySchema],
+      default: [],
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

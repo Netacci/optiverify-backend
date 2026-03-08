@@ -99,6 +99,7 @@ export const initiateRequest = async (req, res) => {
     const {
       itemName,
       category,
+      subcategory,
       quantity,
       description,
       estimatedSpendRange,
@@ -166,6 +167,7 @@ export const initiateRequest = async (req, res) => {
       email: user.email,
       itemName,
       category,
+      subcategory: subcategory || undefined,
       quantity,
       description,
       estimatedSpendRange,
@@ -309,6 +311,7 @@ export const initiatePublicRequest = async (req, res) => {
     const {
       itemName,
       category,
+      subcategory,
       quantity,
       description,
       estimatedSpendRange,
@@ -409,6 +412,7 @@ export const initiatePublicRequest = async (req, res) => {
       email: email.trim().toLowerCase(),
       itemName,
       category,
+      subcategory: subcategory || undefined,
       quantity,
       description,
       estimatedSpendRange,

@@ -12,6 +12,10 @@ const BuyerRequestSchema = new mongoose.Schema(
       required: [true, "Category is required"],
       trim: true,
     },
+    subcategory: {
+      type: String,
+      trim: true,
+    },
     unitPrice: {
       type: Number,
       required: [true, "Unit price is required"],

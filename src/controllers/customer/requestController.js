@@ -9,6 +9,7 @@ export const createRequest = async (req, res) => {
     const {
       name,
       category,
+      subcategory,
       unitPrice,
       quantity,
       description,
@@ -87,6 +88,7 @@ export const createRequest = async (req, res) => {
     const buyerRequest = new BuyerRequest({
       name,
       category,
+      subcategory: subcategory || undefined,
       unitPrice: unitPriceNum,
       totalAmount,
       quantity,

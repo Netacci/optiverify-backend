@@ -23,6 +23,10 @@ const ManagedServiceSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    subcategory: {
+      type: String,
+      trim: true,
+    },
     quantity: {
       type: String,
       required: true,

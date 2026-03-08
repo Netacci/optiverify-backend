@@ -2,6 +2,13 @@ import mongoose from "mongoose";
 
 const SupplierSchema = new mongoose.Schema(
   {
+    // Auto-generated Supplier Number (e.g. OV0018774)
+    supplierNumber: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     // Basic Information
     name: {
       type: String,
@@ -18,16 +25,7 @@ const SupplierSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-    description: {
-      type: String,
-      required: true,
-    },
     // Location Information
-    location: {
-      type: String,
-      required: true,
-      trim: true,
-    },
     country: {
       type: String,
       trim: true,
@@ -47,7 +45,7 @@ const SupplierSchema = new mongoose.Schema(
     },
     email: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
       lowercase: true,
     },
@@ -101,6 +99,10 @@ const SupplierSchema = new mongoose.Schema(
       trim: true,
     },
     // Verification & Status
+    businessVerification: {
+      type: String,
+      trim: true,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -120,12 +122,6 @@ const SupplierSchema = new mongoose.Schema(
     buyerMatchRecommendation: {
       type: String,
       trim: true,
-    },
-    // Search & Keywords
-    keywords: {
-      type: [String],
-      default: [],
-      index: true,
     },
   },
   {
