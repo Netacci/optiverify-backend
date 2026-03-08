@@ -9,7 +9,6 @@ export const createRequest = async (req, res) => {
     const {
       name,
       category,
-      subcategory,
       unitPrice,
       quantity,
       description,
@@ -20,6 +19,7 @@ export const createRequest = async (req, res) => {
       // Legacy support for budget field
       budget,
     } = req.body;
+    const subCategory = req.body.subCategory ?? req.body.subcategory;
 
     // Use authenticated user's email if available, otherwise use body email
     const userEmail = req.user?.email || email;
@@ -88,7 +88,7 @@ export const createRequest = async (req, res) => {
     const buyerRequest = new BuyerRequest({
       name,
       category,
-      subcategory: subcategory || undefined,
+      subCategory: subCategory || undefined,
       unitPrice: unitPriceNum,
       totalAmount,
       quantity,

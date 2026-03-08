@@ -12,9 +12,15 @@ const BuyerRequestSchema = new mongoose.Schema(
       required: [true, "Category is required"],
       trim: true,
     },
+    subCategory: {
+      type: String,
+      trim: true,
+    },
+    // Legacy: kept for reading old documents that have "subcategory" in DB
     subcategory: {
       type: String,
       trim: true,
+      select: true,
     },
     unitPrice: {
       type: Number,

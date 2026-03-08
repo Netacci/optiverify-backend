@@ -454,59 +454,127 @@ export const getReceiptById = async (req, res) => {
 };
 
 /**
- * Get all transactions (receipts) for the current user with pagination
+ * Get all transactions (receipts) for the current user with pagination.
+ *
+ * Performance: uses batch queries instead of per-payment DB calls.
+ * Total DB round trips: 4 (user + payments by email + user's managed service IDs +
+ * extra MS payments) + 3 parallel batch lookups (BuyerRequests, ManagedServices,
+ * MatchReports) regardless of how many payments exist.
  */
 export const getAllReceipts = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).select("email _id").lean();
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
-    const receipts = [];
+    const emailRegex = new RegExp(
+      `^${user.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "i"
+    );
 
-    // Get all payment receipts (including savings fee payments)
-    // First, get payments by email match — do NOT populate requestId here because for managed
-    // service payments the requestId points to a ManagedService (not a BuyerRequest), and
-    // Mongoose would set it to null after a failed populate, breaking the ManagedService lookup.
+    // 1. Payments directly on the user's email
     const paymentsByEmail = await Payment.find({
-      email: { $regex: new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-      status: "succeeded",
-    }).sort({ createdAt: -1 });
-
-    // Also get all managed service payments and filter by ownership
-    const allManagedServicePayments = await Payment.find({
-      planType: { $in: ["managed_service", "managed_service_savings_fee"] },
+      email: { $regex: emailRegex },
       status: "succeeded",
     })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // Filter managed service payments to only those owned by this user
-    const userManagedServicePayments = [];
-    for (const payment of allManagedServicePayments) {
-      if (payment.requestId) {
-        const managedService = await ManagedService.findById(payment.requestId);
-        if (managedService && (
-          managedService.userId?.toString() === user._id.toString() ||
-          managedService.email.toLowerCase() === user.email.toLowerCase()
-        )) {
-          // Only add if not already in paymentsByEmail
-          const alreadyIncluded = paymentsByEmail.some(p => p._id.toString() === payment._id.toString());
-          if (!alreadyIncluded) {
-            userManagedServicePayments.push(payment);
-          }
-        }
+    const emailPaymentIds = new Set(paymentsByEmail.map((p) => p._id.toString()));
+
+    // 2. Find managed services owned by this user (by userId OR email) — single query
+    const userManagedServices = await ManagedService.find({
+      $or: [
+        { userId: user._id },
+        { email: { $regex: emailRegex } },
+      ],
+    })
+      .select("_id")
+      .lean();
+
+    const userMSIds = userManagedServices.map((s) => s._id);
+
+    // 3. Find MS payments for those IDs not already covered by email match
+    let extraMSPayments = [];
+    if (userMSIds.length > 0) {
+      const msPayments = await Payment.find({
+        planType: { $in: ["managed_service", "managed_service_savings_fee"] },
+        requestId: { $in: userMSIds },
+        status: "succeeded",
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      extraMSPayments = msPayments.filter(
+        (p) => !emailPaymentIds.has(p._id.toString())
+      );
+    }
+
+    const allPayments = [...paymentsByEmail, ...extraMSPayments];
+
+    if (allPayments.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          transactions: [],
+          pagination: { page, limit, total: 0, totalPages: 0 },
+        },
+      });
+    }
+
+    // 4. Collect IDs for batch lookups — one query per collection, all in parallel
+    const brIds = [];
+    const msIds = [];
+    const mrIds = [];
+
+    for (const p of allPayments) {
+      if (
+        p.planType === "managed_service" ||
+        p.planType === "managed_service_savings_fee"
+      ) {
+        if (p.requestId) msIds.push(p.requestId);
+      } else if (p.planType !== "extra_credit") {
+        if (p.requestId) brIds.push(p.requestId);
+        if (p.matchReportId) mrIds.push(p.matchReportId);
       }
     }
 
-    // Combine all payments
-    const allPayments = [...paymentsByEmail, ...userManagedServicePayments];
+    const [buyerRequests, managedServices, matchReports] = await Promise.all([
+      brIds.length > 0
+        ? BuyerRequest.find({ _id: { $in: brIds } })
+            .select("name category")
+            .lean()
+        : [],
+      msIds.length > 0
+        ? ManagedService.find({ _id: { $in: msIds } })
+            .select("itemName category savingsAmount savingsFeePercentage")
+            .lean()
+        : [],
+      mrIds.length > 0
+        ? MatchReport.find({ _id: { $in: mrIds } }).select("status").lean()
+        : [],
+    ]);
 
-    for (const payment of allPayments) {
+    // Build O(1) lookup maps
+    const brMap = Object.fromEntries(
+      buyerRequests.map((r) => [r._id.toString(), r])
+    );
+    const msMap = Object.fromEntries(
+      managedServices.map((s) => [s._id.toString(), s])
+    );
+    const mrMap = Object.fromEntries(
+      matchReports.map((m) => [m._id.toString(), m])
+    );
+
+    // 5. Build receipts using in-memory maps — no more per-payment DB calls
+    const receipts = allPayments.map((payment) => {
+      const ridStr = payment.requestId?.toString();
+      const mridStr = payment.matchReportId?.toString();
+
       if (payment.planType === "managed_service_savings_fee") {
-        // Find the managed service for additional details
-        const managedService = await ManagedService.findById(payment.requestId);
-        receipts.push({
+        const ms = msMap[ridStr];
+        return {
           id: payment._id,
           type: "managed_service_savings_fee",
           amount: payment.amount,
@@ -516,15 +584,16 @@ export const getAllReceipts = async (req, res) => {
           createdAt: payment.createdAt,
           paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
           service: {
-            id: managedService?._id,
-            itemName: managedService?.itemName,
-            category: managedService?.category,
+            id: ms?._id,
+            itemName: ms?.itemName,
+            category: ms?.category,
           },
-        });
-      } else if (payment.planType === "extra_credit") {
-        // Top-up credit payment
-        const quantity = Math.floor(payment.amount / 10); // $10 per credit
-        receipts.push({
+        };
+      }
+
+      if (payment.planType === "extra_credit") {
+        const quantity = Math.floor(payment.amount / 10);
+        return {
           id: payment._id,
           type: "top_up",
           amount: payment.amount,
@@ -534,65 +603,55 @@ export const getAllReceipts = async (req, res) => {
           createdAt: payment.createdAt,
           paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
           credits: quantity,
-          description: `Top-up: ${quantity} credit${quantity > 1 ? 's' : ''}`,
-        });
-      } else {
-        // Handle both managed_service and match_report
-        if (payment.planType === "managed_service") {
-          const managedService = await ManagedService.findById(payment.requestId);
-          receipts.push({
-            id: payment._id,
-            type: "managed_service",
-            amount: payment.amount,
-            currency: payment.currency || "usd",
-            planType: payment.planType,
-            paidAt: payment.paidAt || payment.createdAt,
-            createdAt: payment.createdAt,
-            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
-            service: {
-              id: payment.requestId,
-              itemName: managedService?.itemName,
-              category: managedService?.category,
-            },
-          });
-        } else {
-          // Manually look up BuyerRequest since we removed the populate call above.
-          const buyerRequest = payment.requestId
-            ? await BuyerRequest.findById(payment.requestId).lean()
-            : null;
-          const matchReport = payment.matchReportId
-            ? await MatchReport.findById(payment.matchReportId).lean()
-            : null;
-          receipts.push({
-            id: payment._id,
-            type: "match_report",
-            amount: payment.amount,
-            currency: payment.currency || "usd",
-            planType: payment.planType,
-            paidAt: payment.paidAt || payment.createdAt,
-            createdAt: payment.createdAt,
-            paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
-            request: {
-              id: buyerRequest?._id || payment.requestId,
-              name: buyerRequest?.name,
-              category: buyerRequest?.category,
-            },
-            matchReport: {
-              id: matchReport?._id,
-              status: matchReport?.status,
-            },
-          });
-        }
+          description: `Top-up: ${quantity} credit${quantity > 1 ? "s" : ""}`,
+        };
       }
-    }
 
-    // Note: Managed service receipts are already added from the Payment collection above.
-    // We don't need to fetch from ManagedService collection as it would cause duplicates.
+      if (payment.planType === "managed_service") {
+        const ms = msMap[ridStr];
+        return {
+          id: payment._id,
+          type: "managed_service",
+          amount: payment.amount,
+          currency: payment.currency || "usd",
+          planType: payment.planType,
+          paidAt: payment.paidAt || payment.createdAt,
+          createdAt: payment.createdAt,
+          paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+          service: {
+            id: payment.requestId,
+            itemName: ms?.itemName,
+            category: ms?.category,
+          },
+        };
+      }
 
-    // Sort all receipts by date (newest first)
+      // match_report (and subscription plan types)
+      const br = brMap[ridStr];
+      const mr = mrMap[mridStr];
+      return {
+        id: payment._id,
+        type: "match_report",
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        planType: payment.planType,
+        paidAt: payment.paidAt || payment.createdAt,
+        createdAt: payment.createdAt,
+        paymentMethod: payment.stripePaymentIntentId ? "stripe" : "credits",
+        request: {
+          id: br?._id || payment.requestId,
+          name: br?.name,
+          category: br?.category,
+        },
+        matchReport: {
+          id: mr?._id,
+          status: mr?.status,
+        },
+      };
+    });
+
+    // Sort newest first, then paginate in memory
     receipts.sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt));
-
-    // Paginate
     const total = receipts.length;
     const paginatedReceipts = receipts.slice(skip, skip + limit);
 

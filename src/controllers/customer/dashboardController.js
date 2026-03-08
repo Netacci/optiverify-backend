@@ -220,6 +220,7 @@ export const getUserRequests = async (req, res) => {
       return {
         requestId: request._id,
         category: request.category,
+        subCategory: request.subCategory ?? request.subcategory,
         description: request.description,
         quantity: request.quantity,
         budget: request.budget,
@@ -577,7 +578,7 @@ export const getRequestDetails = async (req, res) => {
           id: request._id,
           name: request.name,
           category: request.category || matchReport.preview.category,
-          subcategory: request.subcategory,
+          subCategory: request.subCategory ?? request.subcategory,
           description: request.description || matchReport.preview.summary,
           unitPrice: request.unitPrice,
           totalAmount: request.totalAmount,

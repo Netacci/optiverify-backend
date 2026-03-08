@@ -99,7 +99,6 @@ export const initiateRequest = async (req, res) => {
     const {
       itemName,
       category,
-      subcategory,
       quantity,
       description,
       estimatedSpendRange,
@@ -112,6 +111,7 @@ export const initiateRequest = async (req, res) => {
       budget,
       deadline,
     } = req.body;
+    const subCategory = req.body.subCategory ?? req.body.subcategory;
 
     const user = req.user; // Authenticated user
 
@@ -167,7 +167,7 @@ export const initiateRequest = async (req, res) => {
       email: user.email,
       itemName,
       category,
-      subcategory: subcategory || undefined,
+      subCategory: subCategory || undefined,
       quantity,
       description,
       estimatedSpendRange,
@@ -311,7 +311,6 @@ export const initiatePublicRequest = async (req, res) => {
     const {
       itemName,
       category,
-      subcategory,
       quantity,
       description,
       estimatedSpendRange,
@@ -325,6 +324,7 @@ export const initiatePublicRequest = async (req, res) => {
       budget,
       deadline,
     } = req.body;
+    const subCategory = req.body.subCategory ?? req.body.subcategory;
 
     // Validate email
     if (!email || !email.trim()) {
@@ -412,7 +412,7 @@ export const initiatePublicRequest = async (req, res) => {
       email: email.trim().toLowerCase(),
       itemName,
       category,
-      subcategory: subcategory || undefined,
+      subCategory: subCategory || undefined,
       quantity,
       description,
       estimatedSpendRange,

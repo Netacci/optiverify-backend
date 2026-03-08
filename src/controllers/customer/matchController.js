@@ -41,9 +41,10 @@ export const processMatching = async (req, res) => {
       });
     }
 
-    // Check if user has active subscription plan (if authenticated)
-    // If not authenticated or no active subscription, redirect to payment page
+    // Check if user has active subscription plan and credits (if authenticated)
+    // Hybrid path runs only when: active plan AND at least one credit
     let hasActivePlan = false;
+    let hasCreditsForHybrid = false;
     let user = null;
 
     if (req.user) {
@@ -55,10 +56,11 @@ export const processMatching = async (req, res) => {
           user.subscriptionStatus === "active" &&
           (!user.subscriptionExpiresAt ||
             new Date(user.subscriptionExpiresAt) > new Date());
+        hasCreditsForHybrid = !!(user.matchCredits > 0);
       }
     }
 
-    // Load all active suppliers and apply hard filter (category + subcategory)
+    // Load all active suppliers and apply hard filter (category + subCategory)
     const allSuppliers = await Supplier.find({ isActive: true });
     if (allSuppliers.length === 0) {
       return res.status(404).json({
@@ -67,29 +69,36 @@ export const processMatching = async (req, res) => {
       });
     }
 
-    console.log(`\n[HARD FILTER] Request category: "${buyerRequest.category}"${buyerRequest.subcategory ? ` | subcategory: "${buyerRequest.subcategory}"` : ""}`);
-    console.log(`[HARD FILTER] Checking ${allSuppliers.length} active suppliers...`);
+    const reqSubCategory = buyerRequest.subCategory ?? buyerRequest.subcategory;
+    if (process.env.NODE_ENV === "development") {
+      console.log(`\n[HARD FILTER] Request category: "${buyerRequest.category}"${reqSubCategory ? ` | subCategory: "${reqSubCategory}"` : ""}`);
+      console.log(`[HARD FILTER] Checking ${allSuppliers.length} active suppliers...`);
+    }
     const filteredSuppliers = allSuppliers.filter((supplier) =>
       passesHardFilter(buyerRequest, supplier)
     );
-    console.log(`[HARD FILTER] ${filteredSuppliers.length} passed, ${allSuppliers.length - filteredSuppliers.length} excluded\n`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`[HARD FILTER] ${filteredSuppliers.length} passed, ${allSuppliers.length - filteredSuppliers.length} excluded\n`);
+    }
 
     if (filteredSuppliers.length === 0) {
       return res.status(404).json({
         success: false,
         message:
           "No suppliers found matching your category" +
-          (buyerRequest.subcategory ? " and subcategory" : "") +
+          (reqSubCategory ? " and subcategory" : "") +
           ". Try broadening your selection.",
       });
     }
 
-    // --- PATH A: No active subscription — rule-based preview only, no AI ---
-    if (!hasActivePlan) {
-      console.log(`\n${"─".repeat(60)}`);
-      console.log(`[PREVIEW SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
-      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (rule-based, no AI)`);
-      console.log(`─────────────────────────────────────────────────────────`);
+    // --- PATH A: No active plan or no credits — rule-based preview only, no AI ---
+    if (!hasActivePlan || !hasCreditsForHybrid) {
+      if (process.env.NODE_ENV === "development") {
+        console.log(`\n${"─".repeat(60)}`);
+        console.log(`[PREVIEW SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${reqSubCategory ? ` > ${reqSubCategory}` : ""}`);
+        console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (rule-based, no AI)`);
+        console.log(`─────────────────────────────────────────────────────────`);
+      }
 
       const suppliersWithScores = filteredSuppliers.map((supplier) => {
         const result = calculatePreviewScore(buyerRequest, supplier);
@@ -105,13 +114,15 @@ export const processMatching = async (req, res) => {
         topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
       );
 
-      console.log(`─────────────────────────────────────────────────────────`);
-      console.log(`[PREVIEW RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
-      topSuppliers.forEach((s, i) =>
-        console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
-      );
-      console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
-      console.log(`${"─".repeat(60)}\n`);
+      if (process.env.NODE_ENV === "development") {
+        console.log(`─────────────────────────────────────────────────────────`);
+        console.log(`[PREVIEW RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+        topSuppliers.forEach((s, i) =>
+          console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
+        );
+        console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+        console.log(`${"─".repeat(60)}\n`);
+      }
 
       const requestSummary = buyerRequest.description
         ? buyerRequest.description.substring(0, 200)
@@ -171,10 +182,41 @@ export const processMatching = async (req, res) => {
     }
 
     // --- PATH B: Active subscription with credits — hybrid scoring with Groq AI ---
-    console.log(`\n${"─".repeat(60)}`);
-    console.log(`[HYBRID SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
-    console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
-    console.log(`─────────────────────────────────────────────────────────`);
+    // Deduct 1 credit and log transaction BEFORE any Groq calls
+    if (user && user.matchCredits > 0) {
+      const creditsBefore = user.matchCredits;
+      user.matchCredits -= 1;
+      await user.save();
+
+      const CreditTransaction = (
+        await import("../../models/customer/CreditTransaction.js")
+      ).default;
+      await CreditTransaction.create({
+        userId: user._id,
+        requestId: id,
+        matchReportId: matchReport?._id || null,
+        email: user.email,
+        creditsUsed: 1,
+        creditsBefore,
+        creditsAfter: user.matchCredits,
+        transactionType: "deducted",
+        reason: "match_generation",
+        notes: "Credit used for hybrid AI match generation",
+      });
+
+      if (process.env.NODE_ENV === "development") {
+        console.log(
+          `[processMatching] Deducted 1 credit from user ${user._id}. Remaining: ${user.matchCredits}`
+        );
+      }
+    }
+
+    if (process.env.NODE_ENV === "development") {
+      console.log(`\n${"─".repeat(60)}`);
+      console.log(`[HYBRID SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${reqSubCategory ? ` > ${reqSubCategory}` : ""}`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+      console.log(`─────────────────────────────────────────────────────────`);
+    }
 
     const suppliersWithScores = await Promise.all(
       filteredSuppliers.map(async (supplier) => {
@@ -191,15 +233,16 @@ export const processMatching = async (req, res) => {
       topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
     );
 
-    console.log(`─────────────────────────────────────────────────────────`);
-    console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
-    topSuppliers.forEach((s, i) =>
-      console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
-    );
-    console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
-    console.log(`${"─".repeat(60)}\n`);
-
-    console.log(`📝 Generating request summary and supplier explanations...`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`─────────────────────────────────────────────────────────`);
+      console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+      topSuppliers.forEach((s, i) =>
+        console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
+      );
+      console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+      console.log(`${"─".repeat(60)}\n`);
+      console.log(`📝 Generating request summary and supplier explanations...`);
+    }
     const [requestSummary, suppliersWithExplanations] = await Promise.all([
       generateRequestSummary(buyerRequest),
       Promise.all(
@@ -222,33 +265,6 @@ export const processMatching = async (req, res) => {
         })
       ),
     ]);
-
-    // Deduct one credit
-    if (user && user.matchCredits > 0) {
-      const creditsBefore = user.matchCredits;
-      user.matchCredits -= 1;
-      await user.save();
-
-      const CreditTransaction = (
-        await import("../../models/customer/CreditTransaction.js")
-      ).default;
-      await CreditTransaction.create({
-        userId: user._id,
-        requestId: id,
-        matchReportId: matchReport?._id || null,
-        email: user.email,
-        creditsUsed: 1,
-        creditsBefore,
-        creditsAfter: user.matchCredits,
-        transactionType: "deducted",
-        reason: "match_generation",
-        notes: "Credit used for hybrid AI match generation",
-      });
-
-      console.log(
-        `[processMatching] Deducted 1 credit from user ${user._id}. Remaining: ${user.matchCredits}`
-      );
-    }
 
     const reportData = {
       status: "completed",
@@ -275,7 +291,9 @@ export const processMatching = async (req, res) => {
     buyerRequest.status = "processing";
     await buyerRequest.save();
 
-    console.log(`✅ Hybrid match report generated with ${topSuppliers.length} suppliers`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`✅ Hybrid match report generated with ${topSuppliers.length} suppliers`);
+    }
 
     res.json({
       success: true,
@@ -541,20 +559,23 @@ export const generateAIMatch = async (req, res) => {
       passesHardFilter(buyerRequest, supplier)
     );
 
+    const postPaymentSubCategory = buyerRequest.subCategory ?? buyerRequest.subcategory;
     if (filteredSuppliers.length === 0) {
       return res.status(404).json({
         success: false,
         message:
           "No suppliers found matching your category" +
-          (buyerRequest.subcategory ? " and subcategory" : "") +
+          (postPaymentSubCategory ? " and subcategory" : "") +
           ".",
       });
     }
 
-    console.log(`\n${"─".repeat(60)}`);
-    console.log(`[HYBRID SCORING - POST PAYMENT] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
-    console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
-    console.log(`─────────────────────────────────────────────────────────`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`\n${"─".repeat(60)}`);
+      console.log(`[HYBRID SCORING - POST PAYMENT] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${postPaymentSubCategory ? ` > ${postPaymentSubCategory}` : ""}`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+      console.log(`─────────────────────────────────────────────────────────`);
+    }
 
     const suppliersWithScores = await Promise.all(
       filteredSuppliers.map(async (supplier) => {
@@ -571,15 +592,16 @@ export const generateAIMatch = async (req, res) => {
       topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
     );
 
-    console.log(`─────────────────────────────────────────────────────────`);
-    console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
-    topSuppliers.forEach((s, i) =>
-      console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
-    );
-    console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
-    console.log(`${"─".repeat(60)}\n`);
-
-    console.log(`📝 Generating request summary and supplier explanations...`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`─────────────────────────────────────────────────────────`);
+      console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+      topSuppliers.forEach((s, i) =>
+        console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
+      );
+      console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+      console.log(`${"─".repeat(60)}\n`);
+      console.log(`📝 Generating request summary and supplier explanations...`);
+    }
     const [requestSummary, suppliersWithExplanations] = await Promise.all([
       generateRequestSummary(buyerRequest),
       Promise.all(
@@ -624,9 +646,11 @@ export const generateAIMatch = async (req, res) => {
     buyerRequest.status = "processing";
     await buyerRequest.save();
 
-    console.log(
-      `✅ AI match report generated successfully with ${topSuppliers.length} suppliers`
-    );
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        `✅ AI match report generated successfully with ${topSuppliers.length} suppliers`
+      );
+    }
 
     res.json({
       success: true,

@@ -7,6 +7,7 @@ import {
   sendPaymentConfirmationEmail,
   sendSubscriptionSetupEmail,
   sendPaymentAndVerificationEmail,
+  sendMatchPaymentReceiptEmail,
 } from "../../services/emailService.js";
 import { generateToken as generateTokenService } from "../../services/tokenService.js";
 
@@ -1584,12 +1585,37 @@ export const handleWebhook = async (req, res) => {
                   });
                 }
               } catch (emailError) {
-                console.error("[Webhook] Failed to send email:", emailError);
-                // Don't fail the webhook if email fails
+                console.error("[Webhook] Failed to send confirmation email:", emailError);
+              }
+
+              // Send receipt email for extra_credit payments
+              try {
+                // Fetch item info if this top-up was tied to a specific request
+                let topUpItemName = null;
+                let topUpCategory = null;
+                if (payment.requestId && payment.requestId.toString() !== "general") {
+                  const BuyerRequestModel = (await import("../../models/customer/BuyerRequest.js")).default;
+                  const brForReceipt = await BuyerRequestModel.findById(payment.requestId).select("name category");
+                  if (brForReceipt) {
+                    topUpItemName = brForReceipt.name || null;
+                    topUpCategory = brForReceipt.category || null;
+                  }
+                }
+                await sendMatchPaymentReceiptEmail({
+                  email: payment.email,
+                  transactionId: payment._id.toString(),
+                  amount: payment.amount,
+                  itemName: topUpItemName,
+                  category: topUpCategory,
+                  paidAt: payment.paidAt,
+                  planType: payment.planType,
+                });
+                console.log(`[Webhook] Sent receipt email for extra_credit payment to ${payment.email}`);
+              } catch (receiptError) {
+                console.error("[Webhook] Failed to send receipt email for extra_credit:", receiptError);
               }
 
               // Return early for extra_credit payments (we've handled everything)
-              // Payment status is already saved above
               console.log(
                 `[Webhook] Completed extra_credit payment processing for ${payment._id}, credits added successfully`
               );
@@ -1734,19 +1760,32 @@ export const handleWebhook = async (req, res) => {
             if (user && user.isVerified) isVerifiedUser = true;
           }
 
+          // Fetch buyer request info for receipt email (item name + category)
+          let receiptItemName = null;
+          let receiptCategory = null;
+          if (payment.requestId && payment.requestId.toString() !== "general") {
+            try {
+              const BuyerRequestModel = (await import("../../models/customer/BuyerRequest.js")).default;
+              const buyerReqForReceipt = await BuyerRequestModel.findById(payment.requestId).select("name category");
+              if (buyerReqForReceipt) {
+                receiptItemName = buyerReqForReceipt.name || null;
+                receiptCategory = buyerReqForReceipt.category || null;
+              }
+            } catch (fetchErr) {
+              console.error("[Webhook] Failed to fetch buyer request for receipt:", fetchErr.message);
+            }
+          }
+
           // Send combined payment confirmation + verification email
-          // This should happen for ALL payments, not just when matchReport exists
           try {
             if (isVerifiedUser) {
-              // User is already verified, just send receipt
               await sendPaymentConfirmationEmail({
                 email: payment.email,
                 requestId: payment.requestId?.toString() || "general",
                 planType: payment.planType,
-                token: verificationToken, // Pass token just in case, but URL in email will differ
+                token: verificationToken,
               });
             } else {
-              // User needs verification
               await sendPaymentAndVerificationEmail({
                 email: payment.email,
                 requestId: payment.requestId?.toString() || "general",
@@ -1754,12 +1793,25 @@ export const handleWebhook = async (req, res) => {
                 verificationToken,
               });
             }
-            console.log(
-              `[Webhook] Sent payment confirmation email to ${payment.email}`
-            );
+            console.log(`[Webhook] Sent payment confirmation email to ${payment.email}`);
           } catch (emailError) {
-            console.error("Failed to send email:", emailError);
-            // Don't fail the payment if email fails - payment is already successful
+            console.error("[Webhook] Failed to send confirmation email:", emailError);
+          }
+
+          // Send payment receipt email independently — always attempted regardless of confirmation email result
+          try {
+            await sendMatchPaymentReceiptEmail({
+              email: payment.email,
+              transactionId: payment._id.toString(),
+              amount: payment.amount,
+              itemName: receiptItemName,
+              category: receiptCategory,
+              paidAt: payment.paidAt,
+              planType: payment.planType,
+            });
+            console.log(`[Webhook] Sent payment receipt email to ${payment.email}`);
+          } catch (receiptEmailError) {
+            console.error("[Webhook] Failed to send receipt email:", receiptEmailError);
           }
         }
       }

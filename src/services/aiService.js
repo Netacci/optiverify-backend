@@ -7,14 +7,17 @@ const client = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-if (process.env.GROQ_API_KEY) {
-  console.log(
-    "✅ Groq AI enabled - hybrid matching active (llama-3.3-70b-versatile)"
-  );
-} else {
-  console.log(
-    "⚠️  GROQ_API_KEY not found - AI scoring will fall back to keyword matching"
-  );
+const isDev = process.env.NODE_ENV === "development";
+if (isDev) {
+  if (process.env.GROQ_API_KEY) {
+    console.log(
+      "✅ Groq AI enabled - hybrid matching active (llama-3.3-70b-versatile)"
+    );
+  } else {
+    console.log(
+      "⚠️  GROQ_API_KEY not found - AI scoring will fall back to keyword matching"
+    );
+  }
 }
 
 // ========== UTILITIES ==========
@@ -36,33 +39,37 @@ function parseQuantityNumber(text) {
  * Category match is mandatory. Subcategory match is mandatory only when
  * the request specifies a subcategory.
  */
+function getRequestSubCategory(request) {
+  return (request.subCategory ?? request.subcategory)?.trim() || "";
+}
+
 export function passesHardFilter(request, supplier) {
   if (!request.category || !supplier.category) {
-    console.log(`  [FILTER] SKIP "${supplier.name}" — missing category (request: "${request.category}", supplier: "${supplier.category}")`);
+    if (isDev) console.log(`  [FILTER] SKIP "${supplier.name}" — missing category (request: "${request.category}", supplier: "${supplier.category}")`);
     return false;
   }
 
   const reqCat = request.category.toLowerCase().trim();
   const supCat = supplier.category.toLowerCase().trim();
   if (reqCat !== supCat) {
-    console.log(`  [FILTER] SKIP "${supplier.name}" — category mismatch ("${reqCat}" vs "${supCat}")`);
+    if (isDev) console.log(`  [FILTER] SKIP "${supplier.name}" — category mismatch ("${reqCat}" vs "${supCat}")`);
     return false;
   }
 
-  if (request.subcategory && request.subcategory.trim()) {
-    const reqSub = request.subcategory.toLowerCase().trim();
-    if (!supplier.subCategory) {
-      console.log(`  [FILTER] SKIP "${supplier.name}" — no subCategory set on supplier (request subcategory: "${reqSub}")`);
+  const reqSub = getRequestSubCategory(request);
+  if (reqSub) {
+    if (!supplier.subCategory || !supplier.subCategory.trim()) {
+      if (isDev) console.log(`  [FILTER] SKIP "${supplier.name}" — no subCategory set on supplier (request subCategory: "${reqSub}")`);
       return false;
     }
     const supSub = supplier.subCategory.toLowerCase().trim();
-    if (reqSub !== supSub) {
-      console.log(`  [FILTER] SKIP "${supplier.name}" — subcategory mismatch ("${reqSub}" vs "${supSub}")`);
+    if (reqSub.toLowerCase() !== supSub) {
+      if (isDev) console.log(`  [FILTER] SKIP "${supplier.name}" — subCategory mismatch ("${reqSub}" vs "${supSub}")`);
       return false;
     }
   }
 
-  console.log(`  [FILTER] PASS "${supplier.name}" — category: "${supCat}"${supplier.subCategory ? ` | subcategory: "${supplier.subCategory.toLowerCase().trim()}"` : ""}`);
+  if (isDev) console.log(`  [FILTER] PASS "${supplier.name}" — category: "${supCat}"${supplier.subCategory ? ` | subCategory: "${supplier.subCategory.toLowerCase().trim()}"` : ""}`);
   return true;
 }
 
@@ -175,11 +182,13 @@ export function calculatePreviewScore(request, supplier) {
 
   const score = Math.min(100, itemScore + locationScore + moqScore + certScore);
 
-  console.log(
-    `  [PREVIEW] ${supplier.name} | ` +
-    `item=${itemScore}/40 | location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
-    `TOTAL=${score}/100`
-  );
+  if (isDev) {
+    console.log(
+      `  [PREVIEW] ${supplier.name} | ` +
+      `item=${itemScore}/40 | location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `TOTAL=${score}/100`
+    );
+  }
 
   return { score, factors };
 }
@@ -194,10 +203,11 @@ export function calculatePreviewScore(request, supplier) {
 async function scoreItemNameAI(request, supplier) {
   const capabilities = supplier.capabilities || [];
 
+  const reqSub = getRequestSubCategory(request);
   const prompt = `You are a supply chain specialist evaluating supplier-buyer product compatibility.
 
 BUYER ITEM: "${request.name}"
-BUYER CATEGORY: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+BUYER CATEGORY: ${request.category}${reqSub ? ` > ${reqSub}` : ""}
 BUYER DESCRIPTION: ${request.description || "Not provided"}
 
 SUPPLIER CAPABILITIES: ${capabilities.length > 0 ? capabilities.join(", ") : "None listed"}
@@ -241,13 +251,16 @@ Return ONLY this JSON object with no other text or markdown:
       .replace(/```\n?/g, "")
       .trim();
 
-    const parsed = JSON.parse(raw);
+    // Extract first JSON object so we tolerate extra text before/after
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const toParse = jsonMatch ? jsonMatch[0] : raw;
+    const parsed = JSON.parse(toParse);
     return {
       score: Math.min(40, Math.max(0, Number(parsed.score) || 0)),
       reason: parsed.reason || "",
     };
   } catch (err) {
-    console.error(
+    if (isDev) console.error(
       "Groq scoreItemNameAI failed, falling back to keyword:",
       err.message
     );
@@ -295,12 +308,14 @@ export async function calculateHybridScore(request, supplier) {
     itemNameResult.score + locationScore + moqScore + certScore
   );
 
-  console.log(
-    `  [HYBRID]  ${supplier.name} | ` +
-    `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
-    `location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
-    `TOTAL=${score}/100`
-  );
+  if (isDev) {
+    console.log(
+      `  [HYBRID]  ${supplier.name} | ` +
+      `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
+      `location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `TOTAL=${score}/100`
+    );
+  }
 
   return { score, factors };
 }
@@ -317,11 +332,12 @@ export async function generateWhyTheyMatch(
   matchScore,
   factors
 ) {
+  const reqSub = getRequestSubCategory(request);
   const prompt = `You are a procurement analyst writing a supplier match summary for a buyer's paid report.
 
 BUYER REQUEST:
 - Item: ${request.name}
-- Category: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+- Category: ${request.category}${reqSub ? ` > ${reqSub}` : ""}
 - Description: ${request.description || "Not provided"}
 - Preferred Location: ${request.location || "No preference"}
 - Quantity: ${request.quantity || "Not specified"}
@@ -356,7 +372,7 @@ Write exactly 2–3 sentences explaining why this supplier is a good match for t
 
     return response.choices[0].message.content.trim();
   } catch (err) {
-    console.error(
+    if (isDev) console.error(
       "Groq generateWhyTheyMatch failed, using template:",
       err.message
     );
@@ -369,10 +385,11 @@ Write exactly 2–3 sentences explaining why this supplier is a good match for t
  * Falls back to description truncation if Groq fails.
  */
 export async function generateRequestSummary(request) {
+  const reqSub = getRequestSubCategory(request);
   const prompt = `Summarize this procurement request in exactly 2 sentences for a supplier match report. Be factual and specific.
 
 Item: ${request.name}
-Category: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+Category: ${request.category}${reqSub ? ` > ${reqSub}` : ""}
 Quantity: ${request.quantity || "Not specified"}
 Description: ${request.description || "Not provided"}
 Location Preference: ${request.location || "Not specified"}
@@ -395,7 +412,7 @@ Requirements: ${request.requirements || "None"}`;
 
     return response.choices[0].message.content.trim();
   } catch (err) {
-    console.error(
+    if (isDev) console.error(
       "Groq generateRequestSummary failed, using fallback:",
       err.message
     );

@@ -23,6 +23,11 @@ const ManagedServiceSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    subCategory: {
+      type: String,
+      trim: true,
+    },
+    // Legacy: kept for reading old documents
     subcategory: {
       type: String,
       trim: true,

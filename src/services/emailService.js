@@ -137,7 +137,7 @@ export const sendVerificationEmail = async ({
               <p style="font-size: 16px; margin-bottom: 20px;">
                 ${
                   isNewRequest
-                    ? "We found an active subscription for this email. Please verify your email to access your match report."
+                    ? "We received your payment. Please verify your email to access your match report."
                     : "Please verify your email address to continue with your request."
                 }
               </p>
@@ -578,6 +578,142 @@ export const sendManagedServiceReceiptEmail = async ({
     return { success: true, data };
   } catch (error) {
     console.error("Error sending managed service receipt email:", error);
+    throw error;
+  }
+};
+
+/**
+ * Send match request payment receipt email
+ * Sent to all users (verified and unverified) after a successful match payment
+ */
+export const sendMatchPaymentReceiptEmail = async ({
+  email,
+  transactionId,
+  amount,
+  itemName,
+  category,
+  paidAt,
+  planType,
+}) => {
+  const formattedAmount = Number(amount).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  const formattedDate = paidAt
+    ? new Date(paidAt).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : new Date().toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+  const planLabels = {
+    "one-time": "One-Time Match",
+    starter_monthly: "Starter Plan (Monthly)",
+    starter_annual: "Starter Plan (Annual)",
+    professional_monthly: "Professional Plan (Monthly)",
+    professional_annual: "Professional Plan (Annual)",
+    extra_credit: "Credit Top-Up",
+  };
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: email,
+      subject: `Payment Receipt - Optiverifi Match Request`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Payment Receipt</title>
+          </head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0 0 6px 0; font-size: 26px;">Payment Receipt</h1>
+              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Optiverifi</p>
+            </div>
+
+            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+              <p style="font-size: 16px; margin-bottom: 24px; color: #374151;">
+                Thank you for your payment. Here is your receipt for the supplier match request.
+              </p>
+
+              <div style="background: #f9fafb; padding: 24px; border-radius: 8px; margin: 0 0 24px 0; border: 1px solid #e5e7eb;">
+                <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Receipt Details</h2>
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 45%;">Transaction ID</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827; font-family: monospace;">${transactionId}</td>
+                  </tr>
+                  <tr style="border-top: 1px solid #e5e7eb;">
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Payment Date</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${formattedDate}</td>
+                  </tr>
+                  ${itemName ? `
+                  <tr style="border-top: 1px solid #e5e7eb;">
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Item Searched</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${itemName}</td>
+                  </tr>` : ""}
+                  ${category ? `
+                  <tr style="border-top: 1px solid #e5e7eb;">
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Category</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${category}</td>
+                  </tr>` : ""}
+                  ${planType ? `
+                  <tr style="border-top: 1px solid #e5e7eb;">
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Plan</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${planLabels[planType] || planType}</td>
+                  </tr>` : ""}
+                  <tr style="border-top: 1px solid #e5e7eb;">
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Amount Paid</td>
+                    <td style="padding: 8px 0; font-size: 16px; font-weight: 700; color: #111827;">${formattedAmount}</td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="background: #ecfdf5; padding: 16px 20px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 24px;">
+                <p style="margin: 0; font-size: 14px; color: #065f46;">
+                  <strong>Payment received</strong> — your supplier match request is being processed.
+                </p>
+              </div>
+
+              <p style="font-size: 13px; color: #9ca3af; margin-top: 20px;">
+                Please keep this email for your records. If you have any questions, contact us at support@optiverifi.com.
+              </p>
+            </div>
+
+            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="font-size: 12px; color: #9ca3af; margin: 0;">
+                © ${new Date().getFullYear()} Optiverifi. All rights reserved.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error("Resend error:", error);
+      throw error;
+    }
+
+    console.log(`✅ Match payment receipt email sent to ${email}`);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending match payment receipt email:", error);
     throw error;
   }
 };
