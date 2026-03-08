@@ -2,10 +2,11 @@ import BuyerRequest from "../../models/customer/BuyerRequest.js";
 import Supplier from "../../models/admin/Supplier.js";
 import MatchReport from "../../models/customer/MatchReport.js";
 import {
-  calculateAIMatchScore,
-  generateAIExplanation,
+  passesHardFilter,
+  calculatePreviewScore,
+  calculateHybridScore,
+  generateWhyTheyMatch,
   generateRequestSummary,
-  calculateRuleBasedScore,
   generateTemplateExplanation,
 } from "../../services/aiService.js";
 import { verifyToken } from "../../services/tokenService.js";
@@ -57,122 +58,103 @@ export const processMatching = async (req, res) => {
       }
     }
 
-    // If user doesn't have active subscription, generate fallback (rule-based) match for preview
-    // This allows public users to see a preview before payment
-    if (!hasActivePlan) {
-      // Generate fallback match using rule-based scoring
-      const allSuppliers = await Supplier.find({ isActive: true });
-      if (allSuppliers.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "No suppliers available in database",
-        });
-      }
+    // Load all active suppliers and apply hard filter (category + subcategory)
+    const allSuppliers = await Supplier.find({ isActive: true });
+    if (allSuppliers.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No suppliers available in database",
+      });
+    }
 
-      // Calculate rule-based match scores
-      const suppliersWithScores = allSuppliers.map((supplier) => {
-        const matchResult = calculateRuleBasedScore(buyerRequest, supplier);
-        return {
-          supplier,
-          matchScore: matchResult.score,
-          factors: matchResult.factors,
-          whyMatch: matchResult.whyMatch || matchResult.factors.join(", "),
-        };
+    console.log(`\n[HARD FILTER] Request category: "${buyerRequest.category}"${buyerRequest.subcategory ? ` | subcategory: "${buyerRequest.subcategory}"` : ""}`);
+    console.log(`[HARD FILTER] Checking ${allSuppliers.length} active suppliers...`);
+    const filteredSuppliers = allSuppliers.filter((supplier) =>
+      passesHardFilter(buyerRequest, supplier)
+    );
+    console.log(`[HARD FILTER] ${filteredSuppliers.length} passed, ${allSuppliers.length - filteredSuppliers.length} excluded\n`);
+
+    if (filteredSuppliers.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No suppliers found matching your category" +
+          (buyerRequest.subcategory ? " and subcategory" : "") +
+          ". Try broadening your selection.",
+      });
+    }
+
+    // --- PATH A: No active subscription — rule-based preview only, no AI ---
+    if (!hasActivePlan) {
+      console.log(`\n${"─".repeat(60)}`);
+      console.log(`[PREVIEW SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (rule-based, no AI)`);
+      console.log(`─────────────────────────────────────────────────────────`);
+
+      const suppliersWithScores = filteredSuppliers.map((supplier) => {
+        const result = calculatePreviewScore(buyerRequest, supplier);
+        return { supplier, matchScore: result.score, factors: result.factors };
       });
 
-      // Sort by match score (highest first)
       suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+      // Take top 5 regardless of score — passing the hard filter is the quality gate
+      const topSuppliers = suppliersWithScores.slice(0, 5);
 
-      // Filter suppliers with score > 0 and get top 5
-      const qualifiedSuppliers = suppliersWithScores.filter(
-        (item) => item.matchScore > 0
-      );
-      const topSuppliers = qualifiedSuppliers.slice(0, 5);
-
-      if (topSuppliers.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "No matching suppliers found",
-        });
-      }
-
-      // Select preview supplier (highest score)
       const previewSupplier = topSuppliers[0].supplier;
       const averageScore = Math.round(
-        topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
-          topSuppliers.length
+        topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
       );
 
-      // Generate simple summary
+      console.log(`─────────────────────────────────────────────────────────`);
+      console.log(`[PREVIEW RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+      topSuppliers.forEach((s, i) =>
+        console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
+      );
+      console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+      console.log(`${"─".repeat(60)}\n`);
+
       const requestSummary = buyerRequest.description
         ? buyerRequest.description.substring(0, 200)
-        : `Request for ${buyerRequest.name} in ${buyerRequest.category} category`;
+        : `Request for ${buyerRequest.name} in the ${buyerRequest.category} category.`;
 
-      // Create or update match report with fallback data (status: pending)
-      if (!matchReport) {
-        matchReport = new MatchReport({
-          requestId: id,
-          email: buyerRequest.email,
-          status: "pending",
-          preview: {
-            summary: requestSummary,
-            category: buyerRequest.category,
-            matchedCount: topSuppliers.length,
-            matchScore: averageScore,
-            previewSupplier: previewSupplier._id,
-          },
-          fullReport: {
-            suppliers: topSuppliers.map((item, index) => ({
-              supplierId: item.supplier._id,
-              matchScore: item.matchScore,
-              ranking: index + 1,
-              whyTheyMatch: item.whyMatch,
-              aiExplanation: generateTemplateExplanation(
-                buyerRequest,
-                item.supplier,
-                item.matchScore,
-                item.factors || []
-              ),
-              strengths: [],
-              concerns: [],
-            })),
-            generatedAt: new Date(),
-          },
-        });
-      } else {
-        matchReport.status = "pending";
-        matchReport.preview = {
+      const reportData = {
+        status: "pending",
+        preview: {
           summary: requestSummary,
           category: buyerRequest.category,
-          matchedCount: topSuppliers.length,
+          matchedCount: filteredSuppliers.length,
           matchScore: averageScore,
           previewSupplier: previewSupplier._id,
-        };
-        matchReport.fullReport = {
+        },
+        fullReport: {
           suppliers: topSuppliers.map((item, index) => ({
             supplierId: item.supplier._id,
             matchScore: item.matchScore,
             ranking: index + 1,
-            whyTheyMatch: item.whyMatch,
+            whyTheyMatch: item.factors.join(", "),
             aiExplanation: generateTemplateExplanation(
               buyerRequest,
               item.supplier,
               item.matchScore,
-              item.factors || []
+              item.factors
             ),
             strengths: [],
             concerns: [],
           })),
           generatedAt: new Date(),
-        };
-      }
+        },
+      };
 
+      if (!matchReport) {
+        matchReport = new MatchReport({ requestId: id, email: buyerRequest.email, ...reportData });
+      } else {
+        Object.assign(matchReport, reportData);
+      }
       await matchReport.save();
 
-      // Return preview data (without supplier names) - this is what the frontend expects
       return res.json({
         success: true,
-        message: "Fallback match generated successfully",
+        message: "Preview match generated. Unlock to see full supplier details.",
         data: {
           requestId: id,
           matchReportId: matchReport._id,
@@ -188,98 +170,65 @@ export const processMatching = async (req, res) => {
       });
     }
 
-    // Find matching suppliers
-    const allSuppliers = await Supplier.find({ isActive: true });
+    // --- PATH B: Active subscription with credits — hybrid scoring with Groq AI ---
+    console.log(`\n${"─".repeat(60)}`);
+    console.log(`[HYBRID SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
+    console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+    console.log(`─────────────────────────────────────────────────────────`);
 
-    if (allSuppliers.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No suppliers available in database",
-      });
-    }
-
-    // User has active subscription, use AI matching
-    const isAuthenticated = !!req.user;
-
-    // Calculate match scores for all suppliers
-    // Use AI matching for authenticated users with active subscription
-    console.log(
-      `🔍 Calculating match scores for ${allSuppliers.length} suppliers... (AI matching)`
-    );
     const suppliersWithScores = await Promise.all(
-      allSuppliers.map(async (supplier) => {
-        // Use AI matching (user has active subscription)
-        const matchResult = await calculateAIMatchScore(buyerRequest, supplier);
-        return {
-          supplier,
-          matchScore: matchResult.score,
-          factors: matchResult.factors,
-          whyMatch: matchResult.whyMatch,
-          strengths: matchResult.strengths || [],
-          concerns: matchResult.concerns || [],
-          aiGenerated: matchResult.aiGenerated || false,
-        };
+      filteredSuppliers.map(async (supplier) => {
+        const result = await calculateHybridScore(buyerRequest, supplier);
+        return { supplier, matchScore: result.score, factors: result.factors };
       })
     );
 
-    // Sort by match score (highest first)
     suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+    const topSuppliers = suppliersWithScores.slice(0, 5);
 
-    // Filter suppliers with score > 0 and get top 5
-    const qualifiedSuppliers = suppliersWithScores.filter(
-      (item) => item.matchScore > 0
-    );
-    const topSuppliers = qualifiedSuppliers.slice(0, 5);
-
-    if (topSuppliers.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No matching suppliers found",
-      });
-    }
-
-    // Select preview supplier (highest score)
     const previewSupplier = topSuppliers[0].supplier;
     const averageScore = Math.round(
-      topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
-        topSuppliers.length
+      topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
     );
 
-    // Generate summary of the request using AI
-    console.log(`📝 Generating AI request summary...`);
-    const requestSummary = await generateRequestSummary(buyerRequest);
-
-    // Generate AI explanations for each supplier
-    console.log(`🤖 Generating AI explanations for matched suppliers...`);
-    const suppliersWithExplanations = await Promise.all(
-      topSuppliers.map(async (item, index) => {
-        // Use AI explanation (user has active subscription)
-        const explanation = await generateAIExplanation(
-          buyerRequest,
-          item.supplier,
-          item.matchScore,
-          item.factors
-        );
-
-        return {
-          supplierId: item.supplier._id,
-          matchScore: item.matchScore,
-          ranking: index + 1,
-          whyTheyMatch: item.whyMatch || item.factors.join(", "),
-          aiExplanation: explanation,
-          strengths: item.strengths,
-          concerns: item.concerns,
-        };
-      })
+    console.log(`─────────────────────────────────────────────────────────`);
+    console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+    topSuppliers.forEach((s, i) =>
+      console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
     );
+    console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+    console.log(`${"─".repeat(60)}\n`);
 
-    // If user has credits, deduct one (user has active subscription)
+    console.log(`📝 Generating request summary and supplier explanations...`);
+    const [requestSummary, suppliersWithExplanations] = await Promise.all([
+      generateRequestSummary(buyerRequest),
+      Promise.all(
+        topSuppliers.map(async (item, index) => {
+          const explanation = await generateWhyTheyMatch(
+            buyerRequest,
+            item.supplier,
+            item.matchScore,
+            item.factors
+          );
+          return {
+            supplierId: item.supplier._id,
+            matchScore: item.matchScore,
+            ranking: index + 1,
+            whyTheyMatch: explanation,
+            aiExplanation: explanation,
+            strengths: [],
+            concerns: [],
+          };
+        })
+      ),
+    ]);
+
+    // Deduct one credit
     if (user && user.matchCredits > 0) {
       const creditsBefore = user.matchCredits;
       user.matchCredits -= 1;
       await user.save();
 
-      // Create credit transaction record for audit
       const CreditTransaction = (
         await import("../../models/customer/CreditTransaction.js")
       ).default;
@@ -293,7 +242,7 @@ export const processMatching = async (req, res) => {
         creditsAfter: user.matchCredits,
         transactionType: "deducted",
         reason: "match_generation",
-        notes: "Credit used for AI match generation",
+        notes: "Credit used for hybrid AI match generation",
       });
 
       console.log(
@@ -301,62 +250,40 @@ export const processMatching = async (req, res) => {
       );
     }
 
-    // Determine status:
-    // - Public users or authenticated without active plan: "pending"
-    // - Authenticated users with active plan: "completed" (uses AI directly)
-    const reportStatus = hasActivePlan ? "completed" : "pending";
-
-    // Create or update match report
-    if (!matchReport) {
-      matchReport = new MatchReport({
-        requestId: id,
-        email: buyerRequest.email,
-        status: reportStatus,
-        preview: {
-          summary: requestSummary,
-          category: buyerRequest.category,
-          matchedCount: topSuppliers.length,
-          matchScore: averageScore,
-          previewSupplier: previewSupplier._id,
-        },
-        fullReport: {
-          suppliers: suppliersWithExplanations,
-          generatedAt: new Date(),
-        },
-      });
-    } else {
-      matchReport.status = reportStatus;
-      matchReport.preview = {
+    const reportData = {
+      status: "completed",
+      preview: {
         summary: requestSummary,
         category: buyerRequest.category,
-        matchedCount: topSuppliers.length,
+        matchedCount: filteredSuppliers.length,
         matchScore: averageScore,
         previewSupplier: previewSupplier._id,
-      };
-      matchReport.fullReport = {
+      },
+      fullReport: {
         suppliers: suppliersWithExplanations,
         generatedAt: new Date(),
-      };
-    }
+      },
+    };
 
+    if (!matchReport) {
+      matchReport = new MatchReport({ requestId: id, email: buyerRequest.email, ...reportData });
+    } else {
+      Object.assign(matchReport, reportData);
+    }
     await matchReport.save();
 
-    // Update buyer request status
     buyerRequest.status = "processing";
     await buyerRequest.save();
 
-    console.log(
-      `✅ Match report generated successfully with ${topSuppliers.length} suppliers`
-    );
+    console.log(`✅ Hybrid match report generated with ${topSuppliers.length} suppliers`);
 
-    // Return preview data (without supplier names)
     res.json({
       success: true,
       message: "Match report generated successfully",
       data: {
         requestId: id,
         matchReportId: matchReport._id,
-        isUnlocked: matchReport.status === "unlocked", // Explicitly return unlock status
+        isUnlocked: matchReport.status === "unlocked",
         preview: {
           summary: matchReport.preview.summary,
           category: matchReport.preview.category,
@@ -394,9 +321,8 @@ export const getPreview = async (req, res) => {
       });
     }
 
-    // If no match report exists, generate a fallback (rule-based) match for preview
+    // If no match report exists, generate a rule-based preview (no AI)
     if (!matchReport) {
-      // Generate fallback match using rule-based scoring
       const allSuppliers = await Supplier.find({ isActive: true });
       if (allSuppliers.length === 0) {
         return res.status(404).json({
@@ -405,46 +331,26 @@ export const getPreview = async (req, res) => {
         });
       }
 
-      // Calculate rule-based match scores
-      const suppliersWithScores = allSuppliers.map((supplier) => {
-        const matchResult = calculateRuleBasedScore(buyerRequest, supplier);
-        return {
-          supplier,
-          matchScore: matchResult.score,
-          factors: matchResult.factors,
-          whyMatch: matchResult.whyMatch || matchResult.factors.join(", "),
-        };
+      const filteredSuppliers = allSuppliers.filter((supplier) =>
+        passesHardFilter(buyerRequest, supplier)
+      );
+
+      const suppliersWithScores = filteredSuppliers.map((supplier) => {
+        const result = calculatePreviewScore(buyerRequest, supplier);
+        return { supplier, matchScore: result.score, factors: result.factors };
       });
 
-      // Sort by match score (highest first)
       suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+      const topSuppliers = suppliersWithScores.slice(0, 5);
 
-      // Filter suppliers with score > 0 and get top 5
-      const qualifiedSuppliers = suppliersWithScores.filter(
-        (item) => item.matchScore > 0
-      );
-      const topSuppliers = qualifiedSuppliers.slice(0, 5);
-
-      if (topSuppliers.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "No matching suppliers found",
-        });
-      }
-
-      // Select preview supplier (highest score)
       const previewSupplier = topSuppliers[0].supplier;
       const averageScore = Math.round(
-        topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
-          topSuppliers.length
+        topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
       );
-
-      // Generate simple summary
       const requestSummary = buyerRequest.description
         ? buyerRequest.description.substring(0, 200)
-        : `Request for ${buyerRequest.name} in ${buyerRequest.category} category`;
+        : `Request for ${buyerRequest.name} in the ${buyerRequest.category} category.`;
 
-      // Create match report with fallback data (status: pending)
       matchReport = new MatchReport({
         requestId: id,
         email: buyerRequest.email,
@@ -452,7 +358,7 @@ export const getPreview = async (req, res) => {
         preview: {
           summary: requestSummary,
           category: buyerRequest.category,
-          matchedCount: topSuppliers.length,
+          matchedCount: filteredSuppliers.length,
           matchScore: averageScore,
           previewSupplier: previewSupplier._id,
         },
@@ -461,12 +367,12 @@ export const getPreview = async (req, res) => {
             supplierId: item.supplier._id,
             matchScore: item.matchScore,
             ranking: index + 1,
-            whyTheyMatch: item.whyMatch,
+            whyTheyMatch: item.factors.join(", "),
             aiExplanation: generateTemplateExplanation(
               buyerRequest,
               item.supplier,
               item.matchScore,
-              item.factors || []
+              item.factors
             ),
             strengths: [],
             concerns: [],
@@ -621,7 +527,7 @@ export const generateAIMatch = async (req, res) => {
       });
     }
 
-    // Find matching suppliers
+    // Apply hard filter (category + subcategory) then hybrid score with Groq AI
     const allSuppliers = await Supplier.find({ isActive: true });
 
     if (allSuppliers.length === 0) {
@@ -631,74 +537,71 @@ export const generateAIMatch = async (req, res) => {
       });
     }
 
-    // Use AI matching (user is authenticated and has paid)
-    console.log(
-      `🔍 Generating AI match for ${allSuppliers.length} suppliers...`
-    );
-    const suppliersWithScores = await Promise.all(
-      allSuppliers.map(async (supplier) => {
-        const matchResult = await calculateAIMatchScore(buyerRequest, supplier);
-        return {
-          supplier,
-          matchScore: matchResult.score,
-          factors: matchResult.factors,
-          whyMatch: matchResult.whyMatch,
-          strengths: matchResult.strengths || [],
-          concerns: matchResult.concerns || [],
-          aiGenerated: matchResult.aiGenerated || false,
-        };
-      })
+    const filteredSuppliers = allSuppliers.filter((supplier) =>
+      passesHardFilter(buyerRequest, supplier)
     );
 
-    // Sort by match score (highest first)
-    suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
-
-    // Filter suppliers with score > 0 and get top 5
-    const qualifiedSuppliers = suppliersWithScores.filter(
-      (item) => item.matchScore > 0
-    );
-    const topSuppliers = qualifiedSuppliers.slice(0, 5);
-
-    if (topSuppliers.length === 0) {
+    if (filteredSuppliers.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "No matching suppliers found",
+        message:
+          "No suppliers found matching your category" +
+          (buyerRequest.subcategory ? " and subcategory" : "") +
+          ".",
       });
     }
 
-    // Select preview supplier (highest score)
-    const previewSupplier = topSuppliers[0].supplier;
-    const averageScore = Math.round(
-      topSuppliers.reduce((sum, item) => sum + item.matchScore, 0) /
-        topSuppliers.length
-    );
+    console.log(`\n${"─".repeat(60)}`);
+    console.log(`[HYBRID SCORING - POST PAYMENT] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${buyerRequest.subcategory ? ` > ${buyerRequest.subcategory}` : ""}`);
+    console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+    console.log(`─────────────────────────────────────────────────────────`);
 
-    // Generate AI summary
-    console.log(`📝 Generating AI request summary...`);
-    const requestSummary = await generateRequestSummary(buyerRequest);
-
-    // Generate AI explanations for each supplier
-    console.log(`🤖 Generating AI explanations for matched suppliers...`);
-    const suppliersWithExplanations = await Promise.all(
-      topSuppliers.map(async (item, index) => {
-        const explanation = await generateAIExplanation(
-          buyerRequest,
-          item.supplier,
-          item.matchScore,
-          item.factors
-        );
-
-        return {
-          supplierId: item.supplier._id,
-          matchScore: item.matchScore,
-          ranking: index + 1,
-          whyTheyMatch: item.whyMatch || item.factors.join(", "),
-          aiExplanation: explanation,
-          strengths: item.strengths,
-          concerns: item.concerns,
-        };
+    const suppliersWithScores = await Promise.all(
+      filteredSuppliers.map(async (supplier) => {
+        const result = await calculateHybridScore(buyerRequest, supplier);
+        return { supplier, matchScore: result.score, factors: result.factors };
       })
     );
+
+    suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
+    const topSuppliers = suppliersWithScores.slice(0, 5);
+
+    const previewSupplier = topSuppliers[0].supplier;
+    const averageScore = Math.round(
+      topSuppliers.reduce((sum, s) => sum + s.matchScore, 0) / topSuppliers.length
+    );
+
+    console.log(`─────────────────────────────────────────────────────────`);
+    console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+    topSuppliers.forEach((s, i) =>
+      console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
+    );
+    console.log(`  Total in category: ${filteredSuppliers.length} | Average score: ${averageScore}/100`);
+    console.log(`${"─".repeat(60)}\n`);
+
+    console.log(`📝 Generating request summary and supplier explanations...`);
+    const [requestSummary, suppliersWithExplanations] = await Promise.all([
+      generateRequestSummary(buyerRequest),
+      Promise.all(
+        topSuppliers.map(async (item, index) => {
+          const explanation = await generateWhyTheyMatch(
+            buyerRequest,
+            item.supplier,
+            item.matchScore,
+            item.factors
+          );
+          return {
+            supplierId: item.supplier._id,
+            matchScore: item.matchScore,
+            ranking: index + 1,
+            whyTheyMatch: explanation,
+            aiExplanation: explanation,
+            strengths: [],
+            concerns: [],
+          };
+        })
+      ),
+    ]);
 
     // Update match report with AI-generated results
     // Set status to "completed" after AI matching (whether AI succeeds or fallback is used)
@@ -706,7 +609,7 @@ export const generateAIMatch = async (req, res) => {
     matchReport.preview = {
       summary: requestSummary,
       category: buyerRequest.category,
-      matchedCount: topSuppliers.length,
+      matchedCount: filteredSuppliers.length,
       matchScore: averageScore,
       previewSupplier: previewSupplier._id,
     };

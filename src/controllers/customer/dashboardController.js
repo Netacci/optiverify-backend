@@ -518,22 +518,49 @@ export const getRequestDetails = async (req, res) => {
       });
     }
 
-    // Format suppliers
-
-    // Format suppliers
+    // Format suppliers with all available fields
     const suppliers = matchReport.fullReport.suppliers.map((item) => {
       const supplier = item.supplierId;
       return {
+        // Identifiers
+        supplierNumber: supplier.supplierNumber,
+        // Basic
         name: supplier.name,
-        location: supplier.location,
+        category: supplier.category,
+        subCategory: supplier.subCategory,
+        // Location
+        country: supplier.country,
+        stateRegion: supplier.stateRegion,
+        city: supplier.city,
+        location: supplier.stateRegion || supplier.location,
+        // Contact
+        contactName: supplier.contactName,
         email: supplier.email,
         phone: supplier.phone,
         website: supplier.website,
+        // Certifications & Diversity
         certifications: supplier.certifications,
-        leadTime: supplier.leadTime,
-        minOrderQuantity: supplier.minOrderQuantity,
+        diversityType: supplier.diversityType,
+        // Products & Services
         capabilities: supplier.capabilities,
         description: supplier.description,
+        // Order & Capacity
+        minOrderQuantity: supplier.minOrderQuantity,
+        leadTime: supplier.leadTime,
+        annualCapacity: supplier.annualCapacity,
+        // Industry & Risk
+        industry: supplier.industry,
+        riskFlags: supplier.riskFlags,
+        // Data Management
+        dataSource: supplier.dataSource,
+        // Verification
+        businessVerification: supplier.businessVerification,
+        verified: supplier.verified,
+        lastVerifiedDate: supplier.lastVerifiedDate,
+        // Internal
+        internalNotes: supplier.internalNotes,
+        buyerMatchRecommendation: supplier.buyerMatchRecommendation,
+        // Match data
         matchScore: item.matchScore,
         ranking: item.ranking,
         whyTheyMatch: item.whyTheyMatch,
@@ -550,6 +577,7 @@ export const getRequestDetails = async (req, res) => {
           id: request._id,
           name: request.name,
           category: request.category || matchReport.preview.category,
+          subcategory: request.subcategory,
           description: request.description || matchReport.preview.summary,
           unitPrice: request.unitPrice,
           totalAmount: request.totalAmount,

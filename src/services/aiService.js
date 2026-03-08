@@ -1,343 +1,414 @@
-import OpenAI from "openai";
+import Groq from "groq-sdk";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Initialize OpenAI client (will be null if no API key)
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    })
-  : null;
+const client = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
-// Log AI status on startup
-if (openai) {
+if (process.env.GROQ_API_KEY) {
   console.log(
-    "✅ OpenAI AI integration enabled - Using GPT-4o-mini for enhanced matching"
+    "✅ Groq AI enabled - hybrid matching active (llama-3.3-70b-versatile)"
   );
 } else {
   console.log(
-    "⚠️  OpenAI API key not found - Using rule-based matching (fallback mode)"
+    "⚠️  GROQ_API_KEY not found - AI scoring will fall back to keyword matching"
   );
-  console.log("   Add OPENAI_API_KEY to .env to enable AI features");
+}
+
+// ========== UTILITIES ==========
+
+/**
+ * Parse the first integer from strings like "500 units", "min 500", "500+"
+ */
+function parseQuantityNumber(text) {
+  if (!text) return null;
+  const match = String(text).match(/\d[\d,]*/);
+  if (!match) return null;
+  return parseInt(match[0].replace(/,/g, ""), 10);
+}
+
+// ========== HARD FILTER ==========
+
+/**
+ * Returns true if supplier passes category/subcategory filter.
+ * Category match is mandatory. Subcategory match is mandatory only when
+ * the request specifies a subcategory.
+ */
+export function passesHardFilter(request, supplier) {
+  if (!request.category || !supplier.category) {
+    console.log(`  [FILTER] SKIP "${supplier.name}" — missing category (request: "${request.category}", supplier: "${supplier.category}")`);
+    return false;
+  }
+
+  const reqCat = request.category.toLowerCase().trim();
+  const supCat = supplier.category.toLowerCase().trim();
+  if (reqCat !== supCat) {
+    console.log(`  [FILTER] SKIP "${supplier.name}" — category mismatch ("${reqCat}" vs "${supCat}")`);
+    return false;
+  }
+
+  if (request.subcategory && request.subcategory.trim()) {
+    const reqSub = request.subcategory.toLowerCase().trim();
+    if (!supplier.subCategory) {
+      console.log(`  [FILTER] SKIP "${supplier.name}" — no subCategory set on supplier (request subcategory: "${reqSub}")`);
+      return false;
+    }
+    const supSub = supplier.subCategory.toLowerCase().trim();
+    if (reqSub !== supSub) {
+      console.log(`  [FILTER] SKIP "${supplier.name}" — subcategory mismatch ("${reqSub}" vs "${supSub}")`);
+      return false;
+    }
+  }
+
+  console.log(`  [FILTER] PASS "${supplier.name}" — category: "${supCat}"${supplier.subCategory ? ` | subcategory: "${supplier.subCategory.toLowerCase().trim()}"` : ""}`);
+  return true;
+}
+
+// ========== INDIVIDUAL SCORING FACTORS ==========
+
+/**
+ * Keyword overlap: item name tokens vs supplier capabilities text.
+ * Returns 0–40 points. Used as pre-payment scoring and AI fallback.
+ */
+function scoreItemNameKeyword(itemName, capabilities) {
+  if (!itemName || !capabilities || capabilities.length === 0) return 0;
+
+  const tokens = itemName
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+  if (tokens.length === 0) return 0;
+
+  const capText = capabilities.join(" ").toLowerCase();
+  const hits = tokens.filter((token) => capText.includes(token)).length;
+  if (hits === 0) return 0;
+
+  // 1 hit = 12pts, 2 = 24, 3+ scales to 40 cap
+  return Math.min(40, Math.round((hits / tokens.length) * 40));
 }
 
 /**
- * Enhanced matching score calculation using AI
- * Retries once if AI fails, then falls back to rule-based
+ * State match: request location vs supplier stateRegion.
+ * Returns 25 (match or no preference specified) or 0 (mismatch).
  */
-export const calculateAIMatchScore = async (
-  request,
-  supplier,
-  retryCount = 0
-) => {
-  // Fallback to rule-based if no OpenAI API key
-  if (!openai) {
-    return calculateRuleBasedScore(request, supplier);
+function scoreLocation(request, supplier) {
+  // No location preference — don't penalise, award full score
+  if (!request.location || !request.location.trim()) return 25;
+  // Supplier has no state set — can't confirm match, but don't penalise
+  if (!supplier.stateRegion || !supplier.stateRegion.trim()) return 25;
+  return request.location.toLowerCase().trim() ===
+    supplier.stateRegion.toLowerCase().trim()
+    ? 25
+    : 0;
+}
+
+/**
+ * MOQ compatibility: compares parsed supplier MOQ against parsed request quantity.
+ * Returns 20 (compatible), 10 (no quantity entered, benefit of doubt), or 0 (too low).
+ */
+function scoreMOQ(request, supplier) {
+  const supplierMOQ = parseQuantityNumber(supplier.minOrderQuantity);
+
+  // No MOQ set = accepts any quantity
+  if (supplierMOQ === null) return 20;
+
+  const requestQty = parseQuantityNumber(request.quantity);
+
+  // Buyer didn't specify quantity — partial credit, don't penalise
+  if (requestQty === null) return 10;
+
+  return requestQty >= supplierMOQ ? 20 : 0;
+}
+
+/**
+ * Certifications: matches supplier certifications against request requirements text.
+ * No requirements specified → full 15 pts (benefit of doubt).
+ * Requirements specified → 15 pts if any cert matches, 0 if none match.
+ */
+function scoreCertifications(request, supplier) {
+  // Buyer didn't specify any requirements — award full score
+  if (!request.requirements || !request.requirements.trim()) return 15;
+
+  // Buyer specified requirements but supplier has no certifications listed
+  if (!supplier.certifications || supplier.certifications.length === 0) return 0;
+
+  const reqLower = request.requirements.toLowerCase();
+  const matches = supplier.certifications.filter((cert) =>
+    reqLower.includes(cert.toLowerCase())
+  );
+  return matches.length > 0 ? 15 : 0;
+}
+
+// ========== PRE-PAYMENT: RULE-BASED SCORE ==========
+
+/**
+ * Pure rule-based score for pre-payment preview (no AI calls).
+ * Caller must already have confirmed supplier passes passesHardFilter().
+ */
+export function calculatePreviewScore(request, supplier) {
+  const factors = [];
+
+  const itemScore = scoreItemNameKeyword(request.name, supplier.capabilities);
+  const locationScore = scoreLocation(request, supplier);
+  const moqScore = scoreMOQ(request, supplier);
+  const certScore = scoreCertifications(request, supplier);
+
+  if (itemScore > 0) factors.push("Item relevance match");
+  if (locationScore === 25) {
+    factors.push(
+      !request.location || !request.location.trim()
+        ? "Location (no preference — full credit)"
+        : "Location match"
+    );
+  }
+  if (moqScore === 20) factors.push("MOQ compatible");
+  else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
+  if (certScore === 15) {
+    factors.push(
+      !request.requirements || !request.requirements.trim()
+        ? "Certifications (no requirements — full credit)"
+        : "Certification match"
+    );
   }
 
+  const score = Math.min(100, itemScore + locationScore + moqScore + certScore);
+
+  console.log(
+    `  [PREVIEW] ${supplier.name} | ` +
+    `item=${itemScore}/40 | location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+    `TOTAL=${score}/100`
+  );
+
+  return { score, factors };
+}
+
+// ========== POST-PAYMENT: HYBRID SCORE (Groq + rule-based) ==========
+
+/**
+ * AI: Score item name vs supplier capabilities using Groq.
+ * Returns { score: 0–40, reason: string }.
+ * Falls back to keyword overlap if Groq fails.
+ */
+async function scoreItemNameAI(request, supplier) {
+  const capabilities = supplier.capabilities || [];
+
+  const prompt = `You are a supply chain specialist evaluating supplier-buyer product compatibility.
+
+BUYER ITEM: "${request.name}"
+BUYER CATEGORY: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+BUYER DESCRIPTION: ${request.description || "Not provided"}
+
+SUPPLIER CAPABILITIES: ${capabilities.length > 0 ? capabilities.join(", ") : "None listed"}
+
+TASK: Score how well this supplier's capabilities align with the buyer's specific item on a scale of 0 to 40.
+
+SCORING GUIDE:
+- 35–40: Direct match — supplier explicitly handles this exact product or a direct synonym
+- 25–34: Strong match — supplier's capabilities clearly cover this type of item or close category
+- 15–24: Moderate match — supplier operates in the same domain but is not a precise fit
+- 5–14: Weak match — some related capabilities exist but significant gaps remain
+- 0–4: Poor or no match — capabilities are unrelated, generic, or the list is empty
+
+IMPORTANT RULES:
+- Account for industry synonyms (e.g. "aluminum extrusions" matches "metal extrusion services"; "corrugated boxes" matches "packaging manufacturing")
+- Do NOT reward generic category-level capabilities that any supplier in that category would have
+- If the capabilities list is empty or none listed, score must be 0
+- Be strict: a score above 30 requires clear, specific alignment
+
+Return ONLY this JSON object with no other text or markdown:
+{"score": <integer 0-40>, "reason": "<one concise sentence>"}`;
+
   try {
-    const prompt = `You are an expert supplier matching system. Analyze how well this supplier matches the buyer's request.
-
-BUYER REQUEST:
-- Category: ${request.category}
-- Description: ${request.description}
-- Budget: ${request.budget || "Not specified"}
-- Quantity: ${request.quantity || "Not specified"}
-- Timeline: ${request.timeline || "Not specified"}
-- Location: ${request.location || "Not specified"}
-- Requirements: ${request.requirements || "None"}
-
-SUPPLIER PROFILE:
-- Category: ${supplier.category}
-- Description: ${supplier.description}
-- Location: ${supplier.location}
-- Certifications: ${supplier.certifications.join(", ") || "None"}
-- Capabilities: ${supplier.capabilities.join(", ") || "None"}
-- Lead Time: ${supplier.leadTime || "Not specified"}
-- Min Order Quantity: ${supplier.minOrderQuantity || "Not specified"}
-
-Analyze the match and return a JSON object with:
-1. "score": A number from 0-100 representing match quality
-2. "factors": An array of specific matching factors (e.g., ["Category match", "Budget compatible", "Location suitable"])
-3. "whyMatch": A brief explanation of why this supplier matches (2-3 sentences)
-4. "strengths": An array of this supplier's key strengths for this request
-5. "concerns": An array of any potential concerns or gaps (empty array if none)
-
-Return ONLY valid JSON, no other text.`;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo", // Using cheaper model for cost efficiency
+    const response = await client.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
       messages: [
         {
           role: "system",
           content:
-            "You are an expert supplier matching AI. Always return valid JSON only, no markdown formatting.",
+            "You are a supply chain matching specialist. Return only valid JSON. No markdown, no explanation outside the JSON object.",
         },
-        {
-          role: "user",
-          content: prompt,
-        },
+        { role: "user", content: prompt },
       ],
-      temperature: 0.3, // Lower temperature for more consistent scoring
-      max_tokens: 500,
+      temperature: 0.1,
+      max_tokens: 100,
     });
 
-    const responseText = completion.choices[0].message.content.trim();
-
-    // Remove markdown code blocks if present
-    const jsonText = responseText
+    const raw = response.choices[0].message.content
+      .trim()
       .replace(/```json\n?/g, "")
       .replace(/```\n?/g, "")
       .trim();
 
-    const aiAnalysis = JSON.parse(jsonText);
-
+    const parsed = JSON.parse(raw);
     return {
-      score: Math.min(100, Math.max(0, aiAnalysis.score || 0)),
-      factors: aiAnalysis.factors || [],
-      whyMatch: aiAnalysis.whyMatch || "",
-      strengths: aiAnalysis.strengths || [],
-      concerns: aiAnalysis.concerns || [],
-      aiGenerated: true,
+      score: Math.min(40, Math.max(0, Number(parsed.score) || 0)),
+      reason: parsed.reason || "",
     };
-  } catch (error) {
+  } catch (err) {
     console.error(
-      `AI matching error (attempt ${retryCount + 1}):`,
-      error.message
+      "Groq scoreItemNameAI failed, falling back to keyword:",
+      err.message
     );
-
-    // Retry once if this is the first attempt
-    if (retryCount === 0) {
-      console.log("🔄 Retrying AI matching...");
-      return calculateAIMatchScore(request, supplier, 1);
-    }
-
-    // After retry fails, fallback to rule-based
-    console.log(
-      "⚠️  AI matching failed twice, falling back to rule-based matching"
-    );
-    return calculateRuleBasedScore(request, supplier);
+    return {
+      score: scoreItemNameKeyword(request.name, capabilities),
+      reason: "Scored by keyword overlap (AI unavailable)",
+    };
   }
-};
-
-/**
- * Generate AI-powered explanation for match
- * Retries once if AI fails, then falls back to template-based
- */
-export const generateAIExplanation = async (
-  request,
-  supplier,
-  matchScore,
-  factors,
-  retryCount = 0
-) => {
-  // Fallback to template-based if no OpenAI API key
-  if (!openai) {
-    return generateTemplateExplanation(request, supplier, matchScore, factors);
-  }
-
-  try {
-    const prompt = `Generate a personalized, professional explanation for why this supplier is a good match for the buyer's request.
-
-BUYER REQUEST:
-- Category: ${request.category}
-- Description: ${request.description}
-- Budget: ${request.budget || "Not specified"}
-- Requirements: ${request.requirements || "None"}
-
-SUPPLIER:
-- Name: ${supplier.name}
-- Category: ${supplier.category}
-- Location: ${supplier.location}
-- Match Score: ${matchScore}%
-- Matching Factors: ${factors.join(", ")}
-
-Write a concise, professional explanation (2-3 sentences) that:
-1. Highlights why this supplier matches the buyer's needs
-2. Mentions specific relevant capabilities or certifications
-3. Is personalized and not generic
-
-Return only the explanation text, no labels or formatting.`;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a professional business consultant explaining supplier matches. Be concise and specific.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 200,
-    });
-
-    return completion.choices[0].message.content.trim();
-  } catch (error) {
-    console.error(
-      `AI explanation error (attempt ${retryCount + 1}):`,
-      error.message
-    );
-
-    // Retry once if this is the first attempt
-    if (retryCount === 0) {
-      console.log("🔄 Retrying AI explanation generation...");
-      return generateAIExplanation(request, supplier, matchScore, factors, 1);
-    }
-
-    // After retry fails, fallback to template
-    console.log(
-      "⚠️  AI explanation failed twice, falling back to template-based explanation"
-    );
-    return generateTemplateExplanation(request, supplier, matchScore, factors);
-  }
-};
-
-/**
- * Generate summary of the buyer request using AI
- * Retries once if AI fails, then falls back to truncation
- */
-export const generateRequestSummary = async (request, retryCount = 0) => {
-  // Fallback to simple truncation if no OpenAI API key
-  if (!openai) {
-    return request.description.substring(0, 200);
-  }
-
-  try {
-    const prompt = `Summarize this buyer request in 2-3 sentences for a supplier match report:
-
-Category: ${request.category}
-Description: ${request.description}
-Budget: ${request.budget || "Not specified"}
-Quantity: ${request.quantity || "Not specified"}
-Timeline: ${request.timeline || "Not specified"}
-Location: ${request.location || "Not specified"}
-Requirements: ${request.requirements || "None"}
-
-Create a concise, professional summary that captures the key requirements.`;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a professional business analyst. Create concise summaries. Use only information that is provided in the request only.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0.5,
-      max_tokens: 150,
-    });
-
-    return completion.choices[0].message.content.trim();
-  } catch (error) {
-    console.error(
-      `AI summary error (attempt ${retryCount + 1}):`,
-      error.message
-    );
-
-    // Retry once if this is the first attempt
-    if (retryCount === 0) {
-      console.log("🔄 Retrying AI summary generation...");
-      return generateRequestSummary(request, 1);
-    }
-
-    // After retry fails, fallback to truncation
-    console.log(
-      "⚠️  AI summary failed twice, falling back to description truncation"
-    );
-    return request.description.substring(0, 200);
-  }
-};
-
-// ========== FALLBACK FUNCTIONS (Rule-based) ==========
-
-/**
- * Rule-based matching score (fallback when AI is not available)
- */
-export function calculateRuleBasedScore(request, supplier) {
-  let score = 0;
-  let factors = [];
-
-  // Category match (40 points)
-  if (request.category.toLowerCase() === supplier.category.toLowerCase()) {
-    score += 40;
-    factors.push("Category match");
-  }
-
-  // Location match (20 points)
-  if (request.location) {
-    const requestLocation = request.location.toLowerCase();
-    const supplierLocation = supplier.location.toLowerCase();
-    if (
-      requestLocation.includes(supplierLocation) ||
-      supplierLocation.includes(requestLocation)
-    ) {
-      score += 20;
-      factors.push("Location match");
-    } else {
-      const commonWords = requestLocation
-        .split(" ")
-        .filter((word) => supplierLocation.includes(word) && word.length > 3);
-      if (commonWords.length > 0) {
-        score += 10;
-        factors.push("Partial location match");
-      }
-    }
-  }
-
-  // Keyword/Description match (30 points)
-  const requestText = `${request.description} ${
-    request.requirements || ""
-  }`.toLowerCase();
-  const supplierText = `${supplier.description} ${supplier.capabilities.join(
-    " "
-  )}`.toLowerCase();
-
-  const requestWords = requestText.split(/\s+/);
-  const supplierWords = supplierText.split(/\s+/);
-  const matchingWords = requestWords.filter(
-    (word) => supplierWords.includes(word) && word.length > 4
-  );
-
-  if (matchingWords.length > 0) {
-    score += Math.min(30, matchingWords.length * 5);
-    factors.push(`${matchingWords.length} keyword matches`);
-  }
-
-  // Certifications match (10 points)
-  if (request.requirements && request.requirements.trim()) {
-    const reqLower = request.requirements.toLowerCase();
-    const certMatches = supplier.certifications.filter((cert) =>
-      reqLower.includes(cert.toLowerCase())
-    );
-    if (certMatches.length > 0) {
-      score += 10;
-      factors.push("Certification match");
-    }
-  }
-
-  return {
-    score: Math.min(100, score),
-    factors,
-    whyMatch: "",
-    strengths: [],
-    concerns: [],
-    aiGenerated: false,
-  };
 }
 
 /**
- * Template-based explanation (fallback when AI is not available)
+ * Full hybrid score for post-payment full report.
+ * AI scores item name; everything else is deterministic.
+ * Caller must already have confirmed supplier passes passesHardFilter().
+ */
+export async function calculateHybridScore(request, supplier) {
+  const itemNameResult = await scoreItemNameAI(request, supplier);
+
+  const locationScore = scoreLocation(request, supplier);
+  const moqScore = scoreMOQ(request, supplier);
+  const certScore = scoreCertifications(request, supplier);
+
+  const factors = [];
+  if (itemNameResult.score > 0)
+    factors.push(`Item match: ${itemNameResult.reason}`);
+  if (locationScore === 25) {
+    factors.push(
+      !request.location || !request.location.trim()
+        ? "Location (no preference — full credit)"
+        : "Location match"
+    );
+  }
+  if (moqScore === 20) factors.push("MOQ compatible");
+  else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
+  if (certScore === 15) {
+    factors.push(
+      !request.requirements || !request.requirements.trim()
+        ? "Certifications (no requirements — full credit)"
+        : "Certification match"
+    );
+  }
+
+  const score = Math.min(
+    100,
+    itemNameResult.score + locationScore + moqScore + certScore
+  );
+
+  console.log(
+    `  [HYBRID]  ${supplier.name} | ` +
+    `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
+    `location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+    `TOTAL=${score}/100`
+  );
+
+  return { score, factors };
+}
+
+// ========== POST-PAYMENT: EXPLANATIONS ==========
+
+/**
+ * Generate "why they match" explanation using Groq for top-5 suppliers.
+ * Falls back to template if Groq fails.
+ */
+export async function generateWhyTheyMatch(
+  request,
+  supplier,
+  matchScore,
+  factors
+) {
+  const prompt = `You are a procurement analyst writing a supplier match summary for a buyer's paid report.
+
+BUYER REQUEST:
+- Item: ${request.name}
+- Category: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+- Description: ${request.description || "Not provided"}
+- Preferred Location: ${request.location || "No preference"}
+- Quantity: ${request.quantity || "Not specified"}
+- Requirements / Certifications: ${request.requirements || "None"}
+
+MATCHED SUPPLIER:
+- Name: ${supplier.name}
+- Category: ${supplier.category}${supplier.subCategory ? ` > ${supplier.subCategory}` : ""}
+- State: ${supplier.stateRegion || "Not specified"}
+- Capabilities: ${supplier.capabilities?.join(", ") || "Not listed"}
+- Certifications: ${supplier.certifications?.join(", ") || "None"}
+- Min Order Quantity: ${supplier.minOrderQuantity || "No minimum"}
+- Match Score: ${matchScore}/100
+- Matching Factors: ${factors.join(", ")}
+
+Write exactly 2–3 sentences explaining why this supplier is a good match for this buyer. Be specific and reference actual data above. Do not use filler phrases like "this supplier is well-positioned" or "they stand out". Do not mention the numeric score.`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a professional procurement analyst. Write factual, specific, concise supplier match summaries. Use only information provided. No fluff.",
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.4,
+      max_tokens: 160,
+    });
+
+    return response.choices[0].message.content.trim();
+  } catch (err) {
+    console.error(
+      "Groq generateWhyTheyMatch failed, using template:",
+      err.message
+    );
+    return generateTemplateExplanation(request, supplier, matchScore, factors);
+  }
+}
+
+/**
+ * Generate a 2-sentence summary of the buyer request for the report header.
+ * Falls back to description truncation if Groq fails.
+ */
+export async function generateRequestSummary(request) {
+  const prompt = `Summarize this procurement request in exactly 2 sentences for a supplier match report. Be factual and specific.
+
+Item: ${request.name}
+Category: ${request.category}${request.subcategory ? ` > ${request.subcategory}` : ""}
+Quantity: ${request.quantity || "Not specified"}
+Description: ${request.description || "Not provided"}
+Location Preference: ${request.location || "Not specified"}
+Requirements: ${request.requirements || "None"}`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a business analyst. Write exactly 2 factual sentences summarizing procurement requests. Use only the data provided. No speculation.",
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 120,
+    });
+
+    return response.choices[0].message.content.trim();
+  } catch (err) {
+    console.error(
+      "Groq generateRequestSummary failed, using fallback:",
+      err.message
+    );
+    return request.description
+      ? request.description.substring(0, 200)
+      : `Request for ${request.name} in the ${request.category} category.`;
+  }
+}
+
+// ========== FALLBACK TEMPLATE ==========
+
+/**
+ * Template-based explanation when Groq is unavailable.
  */
 export function generateTemplateExplanation(
   request,
@@ -345,34 +416,39 @@ export function generateTemplateExplanation(
   matchScore,
   factors
 ) {
-  const explanations = [];
-  
-  // Ensure factors is an array
   const factorsArray = Array.isArray(factors) ? factors : [];
+  const parts = [];
 
   if (matchScore >= 80) {
-    explanations.push(
-      "Excellent match with strong alignment across multiple criteria."
-    );
+    parts.push("Excellent alignment with your procurement requirements.");
   } else if (matchScore >= 60) {
-    explanations.push("Good match with solid compatibility in key areas.");
+    parts.push("Strong compatibility with your key requirements.");
   } else {
-    explanations.push("Moderate match with some relevant capabilities.");
+    parts.push("Relevant capabilities matching your category needs.");
   }
 
-  if (factorsArray.includes("Category match")) {
-    explanations.push(
-      `Specializes in ${supplier.category}, directly matching your needs.`
+  if (supplier.capabilities?.length > 0) {
+    parts.push(
+      `Their capabilities include ${supplier.capabilities.slice(0, 3).join(", ")}.`
     );
   }
 
-  if (supplier.certifications.length > 0) {
-    explanations.push(`Certified with ${supplier.certifications.join(", ")}.`);
+  if (supplier.certifications?.length > 0) {
+    parts.push(`Certified: ${supplier.certifications.join(", ")}.`);
   }
 
-  if (supplier.leadTime) {
-    explanations.push(`Lead time: ${supplier.leadTime}.`);
+  if (supplier.stateRegion) {
+    parts.push(`Located in ${supplier.stateRegion}.`);
   }
 
-  return explanations.join(" ");
+  return parts.join(" ");
 }
+
+// ========== BACKWARD-COMPAT ALIASES ==========
+// These keep the matchController imports working without changes.
+export const calculateRuleBasedScore = calculatePreviewScore;
+export const calculateAIMatchScore = async (request, supplier) => {
+  const result = await calculateHybridScore(request, supplier);
+  return { ...result, score: result.score, whyMatch: "", strengths: [], concerns: [], aiGenerated: true };
+};
+export const generateAIExplanation = generateWhyTheyMatch;
