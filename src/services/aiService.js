@@ -96,20 +96,6 @@ function scoreItemNameKeyword(itemName, capabilities) {
   return Math.min(40, Math.round((hits / tokens.length) * 40));
 }
 
-/**
- * State match: request location vs supplier stateRegion.
- * Returns 25 (match or no preference specified) or 0 (mismatch).
- */
-function scoreLocation(request, supplier) {
-  // No location preference — don't penalise, award full score
-  if (!request.location || !request.location.trim()) return 25;
-  // Supplier has no state set — can't confirm match, but don't penalise
-  if (!supplier.stateRegion || !supplier.stateRegion.trim()) return 25;
-  return request.location.toLowerCase().trim() ===
-    supplier.stateRegion.toLowerCase().trim()
-    ? 25
-    : 0;
-}
 
 /**
  * MOQ compatibility: compares parsed supplier MOQ against parsed request quantity.
@@ -153,23 +139,25 @@ function scoreCertifications(request, supplier) {
 /**
  * Pure rule-based score for pre-payment preview (no AI calls).
  * Caller must already have confirmed supplier passes passesHardFilter().
+ *
+ * Scoring (100 pts total):
+ *   Item name keyword match  0–40
+ *   Subcategory              25   (always full — hard filter already guarantees compatibility)
+ *   MOQ compatibility        0–20
+ *   Certifications           0–15 (full if buyer didn't specify requirements)
  */
 export function calculatePreviewScore(request, supplier) {
   const factors = [];
 
   const itemScore = scoreItemNameKeyword(request.name, supplier.capabilities);
-  const locationScore = scoreLocation(request, supplier);
+  // Subcategory is always 25: passesHardFilter() already excluded any supplier
+  // whose subcategory doesn't match, so every supplier here is compatible.
+  const subcategoryScore = 25;
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
   if (itemScore > 0) factors.push("Item relevance match");
-  if (locationScore === 25) {
-    factors.push(
-      !request.location || !request.location.trim()
-        ? "Location (no preference — full credit)"
-        : "Location match"
-    );
-  }
+  factors.push("Subcategory match");
   if (moqScore === 20) factors.push("MOQ compatible");
   else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
   if (certScore === 15) {
@@ -180,12 +168,12 @@ export function calculatePreviewScore(request, supplier) {
     );
   }
 
-  const score = Math.min(100, itemScore + locationScore + moqScore + certScore);
+  const score = Math.min(100, itemScore + subcategoryScore + moqScore + certScore);
 
   if (isDev) {
     console.log(
       `  [PREVIEW] ${supplier.name} | ` +
-      `item=${itemScore}/40 | location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `item=${itemScore}/40 | subcategory=25/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
       `TOTAL=${score}/100`
     );
   }
@@ -279,20 +267,15 @@ Return ONLY this JSON object with no other text or markdown:
 export async function calculateHybridScore(request, supplier) {
   const itemNameResult = await scoreItemNameAI(request, supplier);
 
-  const locationScore = scoreLocation(request, supplier);
+  // Subcategory is always 25: passesHardFilter() already guarantees compatibility.
+  const subcategoryScore = 25;
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
   const factors = [];
   if (itemNameResult.score > 0)
     factors.push(`Item match: ${itemNameResult.reason}`);
-  if (locationScore === 25) {
-    factors.push(
-      !request.location || !request.location.trim()
-        ? "Location (no preference — full credit)"
-        : "Location match"
-    );
-  }
+  factors.push("Subcategory match");
   if (moqScore === 20) factors.push("MOQ compatible");
   else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
   if (certScore === 15) {
@@ -305,14 +288,14 @@ export async function calculateHybridScore(request, supplier) {
 
   const score = Math.min(
     100,
-    itemNameResult.score + locationScore + moqScore + certScore
+    itemNameResult.score + subcategoryScore + moqScore + certScore
   );
 
   if (isDev) {
     console.log(
       `  [HYBRID]  ${supplier.name} | ` +
       `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
-      `location=${locationScore}/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `subcategory=25/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
       `TOTAL=${score}/100`
     );
   }
@@ -339,14 +322,12 @@ BUYER REQUEST:
 - Item: ${request.name}
 - Category: ${request.category}${reqSub ? ` > ${reqSub}` : ""}
 - Description: ${request.description || "Not provided"}
-- Preferred Location: ${request.location || "No preference"}
 - Quantity: ${request.quantity || "Not specified"}
 - Requirements / Certifications: ${request.requirements || "None"}
 
 MATCHED SUPPLIER:
 - Name: ${supplier.name}
 - Category: ${supplier.category}${supplier.subCategory ? ` > ${supplier.subCategory}` : ""}
-- State: ${supplier.stateRegion || "Not specified"}
 - Capabilities: ${supplier.capabilities?.join(", ") || "Not listed"}
 - Certifications: ${supplier.certifications?.join(", ") || "None"}
 - Min Order Quantity: ${supplier.minOrderQuantity || "No minimum"}
@@ -452,10 +433,6 @@ export function generateTemplateExplanation(
 
   if (supplier.certifications?.length > 0) {
     parts.push(`Certified: ${supplier.certifications.join(", ")}.`);
-  }
-
-  if (supplier.stateRegion) {
-    parts.push(`Located in ${supplier.stateRegion}.`);
   }
 
   return parts.join(" ");
