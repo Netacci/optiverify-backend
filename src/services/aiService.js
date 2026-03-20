@@ -78,6 +78,9 @@ export function passesHardFilter(request, supplier) {
 /**
  * Keyword overlap: item name tokens vs supplier capabilities text.
  * Returns 0–40 points. Used as pre-payment scoring and AI fallback.
+ * Gives a base of 15 when the supplier has listed capabilities but no
+ * literal keyword hit — the hard filter already confirmed category match,
+ * so a supplier with relevant capabilities is not a zero.
  */
 function scoreItemNameKeyword(itemName, capabilities) {
   if (!itemName || !capabilities || capabilities.length === 0) return 0;
@@ -90,10 +93,12 @@ function scoreItemNameKeyword(itemName, capabilities) {
 
   const capText = capabilities.join(" ").toLowerCase();
   const hits = tokens.filter((token) => capText.includes(token)).length;
-  if (hits === 0) return 0;
 
-  // 1 hit = 12pts, 2 = 24, 3+ scales to 40 cap
-  return Math.min(40, Math.round((hits / tokens.length) * 40));
+  // No literal keyword hit but supplier has listed capabilities → base 15 pts
+  if (hits === 0) return 15;
+
+  // 1+ hits → scale 15–40
+  return Math.min(40, 15 + Math.round((hits / tokens.length) * 25));
 }
 
 
@@ -117,17 +122,20 @@ function scoreMOQ(request, supplier) {
 
 /**
  * Certifications: matches supplier certifications against request requirements text.
- * No requirements specified → full 15 pts (benefit of doubt).
+ * No requirements specified (or "none"/"n/a"/"-") → full 15 pts (benefit of doubt).
  * Requirements specified → 15 pts if any cert matches, 0 if none match.
  */
 function scoreCertifications(request, supplier) {
+  const req = request.requirements?.trim() || "";
+  const noReq = !req || /^(none|n\/a|na|no|-)$/i.test(req);
+
   // Buyer didn't specify any requirements — award full score
-  if (!request.requirements || !request.requirements.trim()) return 15;
+  if (noReq) return 15;
 
   // Buyer specified requirements but supplier has no certifications listed
   if (!supplier.certifications || supplier.certifications.length === 0) return 0;
 
-  const reqLower = request.requirements.toLowerCase();
+  const reqLower = req.toLowerCase();
   const matches = supplier.certifications.filter((cert) =>
     reqLower.includes(cert.toLowerCase())
   );
@@ -142,7 +150,7 @@ function scoreCertifications(request, supplier) {
  *
  * Scoring (100 pts total):
  *   Item name keyword match  0–40
- *   Subcategory              25   (always full — hard filter already guarantees compatibility)
+ *   Subcategory              35   (always full — hard filter already guarantees compatibility)
  *   MOQ compatibility        0–20
  *   Certifications           0–15 (full if buyer didn't specify requirements)
  */
@@ -150,9 +158,9 @@ export function calculatePreviewScore(request, supplier) {
   const factors = [];
 
   const itemScore = scoreItemNameKeyword(request.name, supplier.capabilities);
-  // Subcategory is always 25: passesHardFilter() already excluded any supplier
+  // Subcategory is always 35: passesHardFilter() already excluded any supplier
   // whose subcategory doesn't match, so every supplier here is compatible.
-  const subcategoryScore = 25;
+  const subcategoryScore = 35;
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
@@ -168,13 +176,14 @@ export function calculatePreviewScore(request, supplier) {
     );
   }
 
-  const score = Math.min(100, itemScore + subcategoryScore + moqScore + certScore);
+  const rawScore = itemScore + subcategoryScore + moqScore + certScore;
+  const score = Math.min(100, Math.max(70, rawScore));
 
   if (isDev) {
     console.log(
       `  [PREVIEW] ${supplier.name} | ` +
-      `item=${itemScore}/40 | subcategory=25/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
-      `TOTAL=${score}/100`
+      `item=${itemScore}/40 | subcategory=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `RAW=${rawScore}/100 | FINAL=${score}/100 (floor 70)`
     );
   }
 
@@ -267,8 +276,8 @@ Return ONLY this JSON object with no other text or markdown:
 export async function calculateHybridScore(request, supplier) {
   const itemNameResult = await scoreItemNameAI(request, supplier);
 
-  // Subcategory is always 25: passesHardFilter() already guarantees compatibility.
-  const subcategoryScore = 25;
+  // Subcategory is always 35: passesHardFilter() already guarantees compatibility.
+  const subcategoryScore = 35;
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
@@ -286,17 +295,15 @@ export async function calculateHybridScore(request, supplier) {
     );
   }
 
-  const score = Math.min(
-    100,
-    itemNameResult.score + subcategoryScore + moqScore + certScore
-  );
+  const rawScore = itemNameResult.score + subcategoryScore + moqScore + certScore;
+  const score = Math.min(100, Math.max(60, rawScore));
 
   if (isDev) {
     console.log(
       `  [HYBRID]  ${supplier.name} | ` +
       `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
-      `subcategory=25/25 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
-      `TOTAL=${score}/100`
+      `subcategory=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `RAW=${rawScore}/100 | FINAL=${score}/100 (floor 60)`
     );
   }
 
