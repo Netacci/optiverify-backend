@@ -149,23 +149,28 @@ function scoreCertifications(request, supplier) {
  * Caller must already have confirmed supplier passes passesHardFilter().
  *
  * Scoring (100 pts total):
- *   Item name keyword match  0–40
- *   Subcategory              35   (always full — hard filter already guarantees compatibility)
- *   MOQ compatibility        0–20
- *   Certifications           0–15 (full if buyer didn't specify requirements)
+ *   Item name keyword match       0–40
+ *   Category / Subcategory match  35   (subcategory when specified, category otherwise)
+ *   MOQ compatibility             0–20
+ *   Certifications                0–15 (full if buyer didn't specify requirements)
  */
 export function calculatePreviewScore(request, supplier) {
   const factors = [];
 
   const itemScore = scoreItemNameKeyword(request.name, supplier.capabilities);
-  // Subcategory is always 35: passesHardFilter() already excluded any supplier
-  // whose subcategory doesn't match, so every supplier here is compatible.
-  const subcategoryScore = 35;
+
+  // Award 35 pts for categorical alignment.
+  // When the request specifies a subcategory the hard filter already guaranteed
+  // it matches — label it subcategory. When no subcategory was selected, the
+  // category match alone earns the full 35 pts.
+  const hasSub = !!getRequestSubCategory(request);
+  const categoryScore = 35;
+  factors.push(hasSub ? "Category + Subcategory match" : "Category match");
+
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
-  if (itemScore > 0) factors.push("Item relevance match");
-  factors.push("Subcategory match");
+  if (itemScore > 0) factors.unshift("Item relevance match");
   if (moqScore === 20) factors.push("MOQ compatible");
   else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
   if (certScore === 15) {
@@ -176,13 +181,14 @@ export function calculatePreviewScore(request, supplier) {
     );
   }
 
-  const rawScore = itemScore + subcategoryScore + moqScore + certScore;
+  const rawScore = itemScore + categoryScore + moqScore + certScore;
   const score = Math.min(100, Math.max(70, rawScore));
 
   if (isDev) {
+    const catLabel = hasSub ? "subcategory" : "category";
     console.log(
       `  [PREVIEW] ${supplier.name} | ` +
-      `item=${itemScore}/40 | subcategory=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `item=${itemScore}/40 | ${catLabel}=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
       `RAW=${rawScore}/100 | FINAL=${score}/100 (floor 70)`
     );
   }
@@ -276,15 +282,18 @@ Return ONLY this JSON object with no other text or markdown:
 export async function calculateHybridScore(request, supplier) {
   const itemNameResult = await scoreItemNameAI(request, supplier);
 
-  // Subcategory is always 35: passesHardFilter() already guarantees compatibility.
-  const subcategoryScore = 35;
+  // Award 35 pts for categorical alignment — subcategory label when specified,
+  // category label when no subcategory was selected by the buyer.
+  const hasSub = !!getRequestSubCategory(request);
+  const categoryScore = 35;
+
   const moqScore = scoreMOQ(request, supplier);
   const certScore = scoreCertifications(request, supplier);
 
   const factors = [];
   if (itemNameResult.score > 0)
     factors.push(`Item match: ${itemNameResult.reason}`);
-  factors.push("Subcategory match");
+  factors.push(hasSub ? "Category + Subcategory match" : "Category match");
   if (moqScore === 20) factors.push("MOQ compatible");
   else if (moqScore === 10) factors.push("MOQ unverified (quantity not entered)");
   if (certScore === 15) {
@@ -295,14 +304,15 @@ export async function calculateHybridScore(request, supplier) {
     );
   }
 
-  const rawScore = itemNameResult.score + subcategoryScore + moqScore + certScore;
+  const rawScore = itemNameResult.score + categoryScore + moqScore + certScore;
   const score = Math.min(100, Math.max(60, rawScore));
 
   if (isDev) {
+    const catLabel = hasSub ? "subcategory" : "category";
     console.log(
       `  [HYBRID]  ${supplier.name} | ` +
       `item(AI)=${itemNameResult.score}/40 (${itemNameResult.reason}) | ` +
-      `subcategory=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
+      `${catLabel}=35/35 | moq=${moqScore}/20 | certs=${certScore}/15 | ` +
       `RAW=${rawScore}/100 | FINAL=${score}/100 (floor 60)`
     );
   }
