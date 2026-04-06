@@ -719,6 +719,208 @@ export const sendMatchPaymentReceiptEmail = async ({
 };
 
 /**
+ * Internal notification to sourcing@optiverifi.com when a managed service payment is received
+ */
+export const sendInternalSourcingNotification = async (managedService, userEmail) => {
+  const deadline = managedService.internalDeadline
+    ? new Date(managedService.internalDeadline).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : "Not specified";
+
+  const paidAt = managedService.serviceFeePaidAt
+    ? new Date(managedService.serviceFeePaidAt).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : new Date().toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+  const row = (label, value) =>
+    value
+      ? `<tr style="border-top: 1px solid #e5e7eb;">
+           <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%; vertical-align: top;">${label}</td>
+           <td style="padding: 8px 0; font-size: 14px; color: #111827;">${value}</td>
+         </tr>`
+      : "";
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: "sourcing@optiverifi.com",
+      subject: `New Managed Sourcing Request — ${managedService.itemName} (${managedService.category})`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0 0 6px 0; font-size: 24px;">New Sourcing Request</h1>
+              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Payment confirmed — action required</p>
+            </div>
+
+            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+              <div style="background: #ecfdf5; padding: 14px 18px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 28px;">
+                <p style="margin: 0; font-size: 14px; color: #065f46;">
+                  <strong>$199 service fee received on ${paidAt}.</strong> This request is now in your queue.
+                </p>
+              </div>
+
+              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</h2>
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${userEmail || managedService.email}</td>
+                  </tr>
+                  ${row("Request ID", managedService._id?.toString())}
+                </table>
+              </div>
+
+              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</h2>
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
+                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${managedService.itemName}</td>
+                  </tr>
+                  ${row("Category", managedService.category + (managedService.subCategory ? ` > ${managedService.subCategory}` : ""))}
+                  ${row("Quantity", managedService.quantity)}
+                  ${row("Budget Range", managedService.estimatedSpendRange)}
+                  ${row("Delivery Location", managedService.deliveryLocation)}
+                  ${row("Deadline", deadline)}
+                  ${row("Urgency", managedService.urgency)}
+                  ${row("Compliance Level", managedService.complianceLevel)}
+                  ${managedService.description ? row("Description", managedService.description.replace(/</g, "&lt;").replace(/>/g, "&gt;")) : ""}
+                </table>
+              </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="font-size: 12px; color: #9ca3af; margin: 0;">© ${new Date().getFullYear()} Optiverifi — Internal Notification</p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error("Resend error (internal sourcing notification):", error);
+      throw error;
+    }
+
+    console.log(`✅ Internal sourcing notification sent to sourcing@optiverifi.com for request ${managedService._id}`);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending internal sourcing notification:", error);
+    throw error;
+  }
+};
+
+/**
+ * Internal notification to info@optiverifi.com when a match request payment is received
+ */
+export const sendInternalMatchNotification = async (buyerRequest, userEmail, planType) => {
+  const planLabels = {
+    "one-time": "One-Time Match",
+    starter_monthly: "Starter Plan (Monthly)",
+    starter_annual: "Starter Plan (Annual)",
+    professional_monthly: "Professional Plan (Monthly)",
+    professional_annual: "Professional Plan (Annual)",
+    extra_credit: "Credit Top-Up",
+  };
+
+  const row = (label, value) =>
+    value
+      ? `<tr style="border-top: 1px solid #e5e7eb;">
+           <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%; vertical-align: top;">${label}</td>
+           <td style="padding: 8px 0; font-size: 14px; color: #111827;">${value}</td>
+         </tr>`
+      : "";
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: "info@optiverifi.com",
+      subject: `New Match Request Payment — ${buyerRequest.name} (${buyerRequest.category})`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0 0 6px 0; font-size: 24px;">New Match Request</h1>
+              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Payment confirmed</p>
+            </div>
+
+            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+              <div style="background: #ecfdf5; padding: 14px 18px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 28px;">
+                <p style="margin: 0; font-size: 14px; color: #065f46;">
+                  <strong>Payment received</strong> for a ${planLabels[planType] || planType || "match"} plan.
+                </p>
+              </div>
+
+              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</h2>
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${userEmail || buyerRequest.email}</td>
+                  </tr>
+                  ${row("Plan", planLabels[planType] || planType)}
+                </table>
+              </div>
+
+              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</h2>
+              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
+                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${buyerRequest.name}</td>
+                  </tr>
+                  ${row("Category", buyerRequest.category + (buyerRequest.subCategory ? ` > ${buyerRequest.subCategory}` : ""))}
+                  ${row("Quantity", buyerRequest.quantity)}
+                  ${row("Unit Price", buyerRequest.unitPrice != null ? `$${buyerRequest.unitPrice}` : null)}
+                  ${row("Timeline / Deadline", buyerRequest.timeline)}
+                  ${row("Delivery Location", buyerRequest.location)}
+                  ${row("Requirements", buyerRequest.requirements)}
+                  ${buyerRequest.description ? row("Description", buyerRequest.description.replace(/</g, "&lt;").replace(/>/g, "&gt;")) : ""}
+                </table>
+              </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="font-size: 12px; color: #9ca3af; margin: 0;">© ${new Date().getFullYear()} Optiverifi — Internal Notification</p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error("Resend error (internal match notification):", error);
+      throw error;
+    }
+
+    console.log(`✅ Internal match notification sent to info@optiverifi.com for request ${buyerRequest._id}`);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending internal match notification:", error);
+    throw error;
+  }
+};
+
+/**
  * Send contact form email to support
  */
 export const sendContactEmail = async ({

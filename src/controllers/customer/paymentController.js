@@ -8,6 +8,8 @@ import {
   sendSubscriptionSetupEmail,
   sendPaymentAndVerificationEmail,
   sendMatchPaymentReceiptEmail,
+  sendInternalSourcingNotification,
+  sendInternalMatchNotification,
 } from "../../services/emailService.js";
 import { generateToken as generateTokenService } from "../../services/tokenService.js";
 
@@ -931,6 +933,13 @@ export const handleWebhook = async (req, res) => {
           console.error("Failed to send email:", emailError);
         }
 
+        // Internal notification to sourcing team
+        try {
+          await sendInternalSourcingNotification(managedService, recipientEmail);
+        } catch (notifyError) {
+          console.error("[Webhook] Failed to send internal sourcing notification:", notifyError.message);
+        }
+
         return res.json({ received: true });
       }
 
@@ -1763,13 +1772,16 @@ export const handleWebhook = async (req, res) => {
           // Fetch buyer request info for receipt email (item name + category)
           let receiptItemName = null;
           let receiptCategory = null;
+          let buyerReqForNotification = null;
           if (payment.requestId && payment.requestId.toString() !== "general") {
             try {
               const BuyerRequestModel = (await import("../../models/customer/BuyerRequest.js")).default;
-              const buyerReqForReceipt = await BuyerRequestModel.findById(payment.requestId).select("name category");
-              if (buyerReqForReceipt) {
-                receiptItemName = buyerReqForReceipt.name || null;
-                receiptCategory = buyerReqForReceipt.category || null;
+              buyerReqForNotification = await BuyerRequestModel.findById(payment.requestId).select(
+                "name category subCategory quantity unitPrice timeline location requirements description email"
+              );
+              if (buyerReqForNotification) {
+                receiptItemName = buyerReqForNotification.name || null;
+                receiptCategory = buyerReqForNotification.category || null;
               }
             } catch (fetchErr) {
               console.error("[Webhook] Failed to fetch buyer request for receipt:", fetchErr.message);
@@ -1812,6 +1824,15 @@ export const handleWebhook = async (req, res) => {
             console.log(`[Webhook] Sent payment receipt email to ${payment.email}`);
           } catch (receiptEmailError) {
             console.error("[Webhook] Failed to send receipt email:", receiptEmailError);
+          }
+
+          // Internal notification to info@optiverifi.com
+          if (buyerReqForNotification) {
+            try {
+              await sendInternalMatchNotification(buyerReqForNotification, payment.email, payment.planType);
+            } catch (notifyError) {
+              console.error("[Webhook] Failed to send internal match notification:", notifyError.message);
+            }
           }
         }
       }
