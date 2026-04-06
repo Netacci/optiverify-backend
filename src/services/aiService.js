@@ -1,21 +1,21 @@
-import Groq from "groq-sdk";
+import OpenAI from "openai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const client = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const isDev = process.env.NODE_ENV === "development";
 if (isDev) {
-  if (process.env.GROQ_API_KEY) {
+  if (process.env.OPENAI_API_KEY) {
     console.log(
-      "✅ Groq AI enabled - hybrid matching active (llama-3.3-70b-versatile)"
+      "✅ OpenAI enabled - hybrid matching active (gpt-4o-mini)"
     );
   } else {
     console.log(
-      "⚠️  GROQ_API_KEY not found - AI scoring will fall back to keyword matching"
+      "⚠️  OPENAI_API_KEY not found - AI scoring will fall back to keyword matching"
     );
   }
 }
@@ -235,7 +235,7 @@ Return ONLY this JSON object with no other text or markdown:
 
   try {
     const response = await client.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -264,7 +264,7 @@ Return ONLY this JSON object with no other text or markdown:
     };
   } catch (err) {
     if (isDev) console.error(
-      "Groq scoreItemNameAI failed, falling back to keyword:",
+      "OpenAI scoreItemNameAI failed, falling back to keyword:",
       err.message
     );
     return {
@@ -355,7 +355,7 @@ Write exactly 2–3 sentences explaining why this supplier is a good match for t
 
   try {
     const response = await client.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -371,7 +371,7 @@ Write exactly 2–3 sentences explaining why this supplier is a good match for t
     return response.choices[0].message.content.trim();
   } catch (err) {
     if (isDev) console.error(
-      "Groq generateWhyTheyMatch failed, using template:",
+      "OpenAI generateWhyTheyMatch failed, using template:",
       err.message
     );
     return generateTemplateExplanation(request, supplier, matchScore, factors);
@@ -395,7 +395,7 @@ Requirements: ${request.requirements || "None"}`;
 
   try {
     const response = await client.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -411,7 +411,7 @@ Requirements: ${request.requirements || "None"}`;
     return response.choices[0].message.content.trim();
   } catch (err) {
     if (isDev) console.error(
-      "Groq generateRequestSummary failed, using fallback:",
+      "OpenAI generateRequestSummary failed, using fallback:",
       err.message
     );
     return request.description

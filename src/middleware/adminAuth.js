@@ -11,7 +11,8 @@ export const authenticateAdmin = async (req, res, next) => {
   try {
     // Get token from cookie (admin token)
     const token =
-      req.cookies?.["ad-token"] || req.headers?.authorization?.replace("Bearer ", "");
+      req.cookies?.["ad-token"] ||
+      req.headers?.authorization?.replace("Bearer ", "");
 
     if (!token) {
       return res.status(401).json({
@@ -27,7 +28,8 @@ export const authenticateAdmin = async (req, res, next) => {
     if (decoded.userId) {
       return res.status(403).json({
         success: false,
-        message: "User tokens cannot access admin routes. Please log in as an admin.",
+        message:
+          "User tokens cannot access admin routes. Please log in as an admin.",
       });
     }
 
@@ -87,4 +89,3 @@ export const generateAdminToken = (adminId) => {
     expiresIn: "30d", // 30 days
   });
 };
-

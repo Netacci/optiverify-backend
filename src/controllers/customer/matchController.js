@@ -214,7 +214,7 @@ export const processMatching = async (req, res) => {
     if (process.env.NODE_ENV === "development") {
       console.log(`\n${"─".repeat(60)}`);
       console.log(`[HYBRID SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${reqSubCategory ? ` > ${reqSubCategory}` : ""}`);
-      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (OpenAI AI + rule-based)`);
       console.log(`─────────────────────────────────────────────────────────`);
     }
 
@@ -573,7 +573,7 @@ export const generateAIMatch = async (req, res) => {
     if (process.env.NODE_ENV === "development") {
       console.log(`\n${"─".repeat(60)}`);
       console.log(`[HYBRID SCORING - POST PAYMENT] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${postPaymentSubCategory ? ` > ${postPaymentSubCategory}` : ""}`);
-      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (Groq AI + rule-based)`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (OpenAI AI + rule-based)`);
       console.log(`─────────────────────────────────────────────────────────`);
     }
 
