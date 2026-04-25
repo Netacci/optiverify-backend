@@ -127,11 +127,10 @@ const SUPPLIER_USER_FIELDS = [
   "diversityType",
   "minOrderQuantity",
   "leadTime",
-  "annualCapacity",
   "industry",
   "riskFlags",
   "dataSource",
-  "businessVerification",
+  "reliability",
 ];
 
 // Privileged fields require superAdmin. `lastVerifiedDate` is grouped here
@@ -313,11 +312,13 @@ export const createSupplier = async (req, res) => {
       }
     });
 
-    // Convert lastVerifiedDate string to Date if provided. `lastVerifiedDate`
-    // is in SUPPLIER_PRIVILEGED_FIELDS, so this only runs when the caller is
-    // a superAdmin and actually included it on the body.
-    if (supplierData.lastVerifiedDate && typeof supplierData.lastVerifiedDate === "string") {
-      supplierData.lastVerifiedDate = new Date(supplierData.lastVerifiedDate);
+    // Coerce lastVerifiedDate to a Number (year) when provided as a string
+    // (e.g. from a form submission). `lastVerifiedDate` is in
+    // SUPPLIER_PRIVILEGED_FIELDS, so this only runs when the caller is a
+    // superAdmin and actually included it on the body.
+    if (supplierData.lastVerifiedDate !== undefined && supplierData.lastVerifiedDate !== "") {
+      const year = Number(supplierData.lastVerifiedDate);
+      supplierData.lastVerifiedDate = Number.isFinite(year) ? year : undefined;
     }
 
     // Ensure arrays are properly formatted
@@ -378,9 +379,10 @@ export const updateSupplier = async (req, res) => {
       Object.assign(update, pickFields(req.body, SUPPLIER_PRIVILEGED_FIELDS));
     }
 
-    // String → Date for `lastVerifiedDate` (privileged, superAdmin-only above).
-    if (update.lastVerifiedDate && typeof update.lastVerifiedDate === "string") {
-      update.lastVerifiedDate = new Date(update.lastVerifiedDate);
+    // Coerce lastVerifiedDate to Number (year). Privileged, superAdmin-only above.
+    if (update.lastVerifiedDate !== undefined && update.lastVerifiedDate !== "") {
+      const year = Number(update.lastVerifiedDate);
+      update.lastVerifiedDate = Number.isFinite(year) ? year : undefined;
     }
 
     const supplier = await Supplier.findByIdAndUpdate(id, update, {
@@ -649,14 +651,11 @@ export const bulkUploadSuppliers = async (req, res) => {
           ? nr.min_order_quantity_moq.toString().trim()
           : "",
         leadTime: nr.lead_time_days ? nr.lead_time_days.toString().trim() : "",
-        annualCapacity: nr.annual_capacity_volume_notes
-          ? nr.annual_capacity_volume_notes.toString().trim()
-          : "",
         industry: nr.industry_construction_it_etc
           ? nr.industry_construction_it_etc.toString().trim()
           : "",
-        businessVerification: nr.business_verification
-          ? nr.business_verification.toString().trim()
+        reliability: nr.reliability
+          ? nr.reliability.toString().trim()
           : "",
         riskFlags: nr.risk_flags_if_any ? nr.risk_flags_if_any.toString().trim() : "",
         dataSource: nr.data_source_link_or_note
@@ -668,7 +667,9 @@ export const bulkUploadSuppliers = async (req, res) => {
             nr.verified_yesno.toString() === "1"
           : false,
         lastVerifiedDate: nr.last_verified_date
-          ? new Date(nr.last_verified_date)
+          ? (Number.isFinite(Number(nr.last_verified_date))
+              ? Number(nr.last_verified_date)
+              : undefined)
           : undefined,
         internalNotes: nr.internal_notes ? nr.internal_notes.toString().trim() : "",
         buyerMatchRecommendation: nr.buyer_match_recommendation

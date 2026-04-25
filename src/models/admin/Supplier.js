@@ -80,10 +80,6 @@ const SupplierSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-    annualCapacity: {
-      type: String,
-      trim: true,
-    },
     // Industry & Risk
     industry: {
       type: String,
@@ -99,7 +95,7 @@ const SupplierSchema = new mongoose.Schema(
       trim: true,
     },
     // Verification & Status
-    businessVerification: {
+    reliability: {
       type: String,
       trim: true,
     },
@@ -112,7 +108,9 @@ const SupplierSchema = new mongoose.Schema(
       default: false,
     },
     lastVerifiedDate: {
-      type: Date,
+      type: Number,
+      min: 1900,
+      max: 2100,
     },
     // Internal Management
     internalNotes: {

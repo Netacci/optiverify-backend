@@ -548,14 +548,13 @@ export const getRequestDetails = async (req, res) => {
         // Order & Capacity
         minOrderQuantity: supplier.minOrderQuantity,
         leadTime: supplier.leadTime,
-        annualCapacity: supplier.annualCapacity,
         // Industry & Risk
         industry: supplier.industry,
         riskFlags: supplier.riskFlags,
         // Data Management
         dataSource: supplier.dataSource,
         // Verification
-        businessVerification: supplier.businessVerification,
+        reliability: supplier.reliability,
         verified: supplier.verified,
         lastVerifiedDate: supplier.lastVerifiedDate,
         // Internal
