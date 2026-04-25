@@ -1,12 +1,159 @@
 import Supplier from "../../models/admin/Supplier.js";
 import multer from "multer";
-import xlsx from "xlsx";
+import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// M-11: SheetJS xlsx@0.18.5 is no longer published to npm and has open
+// prototype-pollution / ReDoS reports. We replaced it with exceljs and a
+// hardened reader that caps row/column counts to defang zip-bomb-style
+// payloads (a malicious .xlsx can advertise millions of rows in a few KB).
+const MAX_SHEET_ROWS = 10000;
+const MAX_SHEET_COLS = 100;
+
+/**
+ * Load an .xlsx/.xls workbook from disk and return the first worksheet's rows
+ * as an array of plain objects keyed by the header row — mirroring the shape
+ * that `xlsx.utils.sheet_to_json` produced for the rest of this controller.
+ *
+ * Throws a tagged Error (`code: "SHEET_TOO_LARGE"`) if the worksheet exceeds
+ * the row/column caps so callers can surface a 400 instead of a 500.
+ */
+async function readXlsxAsJson(filePath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+  return sheetToJson(worksheet);
+}
+
+/**
+ * Convert an exceljs worksheet to an array of `{header: cellValue}` objects.
+ * Row 1 is treated as the header row. Empty header cells are skipped so the
+ * returned objects don't carry undefined keys.
+ *
+ * Enforces MAX_SHEET_ROWS / MAX_SHEET_COLS up-front against the worksheet's
+ * advertised counts so we don't iterate a hostile file before rejecting it.
+ */
+function sheetToJson(worksheet) {
+  const rowCount = worksheet.actualRowCount || worksheet.rowCount || 0;
+  const colCount = worksheet.actualColumnCount || worksheet.columnCount || 0;
+
+  // rowCount includes the header row; cap *data* rows at MAX_SHEET_ROWS.
+  if (rowCount - 1 > MAX_SHEET_ROWS || colCount > MAX_SHEET_COLS) {
+    const err = new Error(
+      `Worksheet too large: max ${MAX_SHEET_ROWS} data rows and ${MAX_SHEET_COLS} columns allowed (got ${Math.max(rowCount - 1, 0)} rows, ${colCount} columns).`
+    );
+    err.code = "SHEET_TOO_LARGE";
+    throw err;
+  }
+
+  const headerRow = worksheet.getRow(1);
+  const headers = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    const raw = cell.value;
+    headers[colNumber - 1] =
+      raw == null || raw === ""
+        ? null
+        : typeof raw === "object" && raw.text
+        ? String(raw.text)
+        : String(raw);
+  });
+
+  const rows = [];
+  for (let r = 2; r <= rowCount; r++) {
+    const row = worksheet.getRow(r);
+    const obj = {};
+    let hasValue = false;
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const key = headers[colNumber - 1];
+      if (!key) return; // skip cells under blank header
+      obj[key] = normalizeCellValue(cell.value);
+      hasValue = true;
+    });
+    if (hasValue) rows.push(obj);
+  }
+  return rows;
+}
+
+/**
+ * exceljs returns rich cell objects for formulas / hyperlinks / rich text and
+ * Date instances for date cells. The downstream code in this file calls
+ * `.toString().trim()` on every value, so we flatten to a primitive here.
+ */
+function normalizeCellValue(value) {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") {
+    if ("text" in value) return String(value.text);
+    if ("result" in value) return String(value.result ?? "");
+    if ("richText" in value && Array.isArray(value.richText)) {
+      return value.richText.map((rt) => rt.text || "").join("");
+    }
+    if ("hyperlink" in value) return String(value.text || value.hyperlink || "");
+  }
+  return value;
+}
+
+// C-5: Mass-assignment defense. Spreading req.body into Supplier.create /
+// findByIdAndUpdate let any caller stamp `verified`, `isActive`,
+// `internalNotes`, `buyerMatchRecommendation`, or `supplierNumber` directly,
+// which a junior admin could abuse to deactivate competitors or self-mark
+// unverified suppliers as verified. We now build the update payload from two
+// explicit allowlists; privileged fields require superAdmin.
+//
+// Field names below MUST match the Supplier schema EXACTLY (see
+// models/admin/Supplier.js). The Wave 1 report flagged that the original
+// allowlist used `subcategory` (lowercase), `location`, and several
+// non-existent fields (`yearEstablished`, `employeeCount`, `description`,
+// `logo`) — those have been reconciled here.
+const SUPPLIER_USER_FIELDS = [
+  "name",
+  "category",
+  "subCategory",
+  "email",
+  "phone",
+  "website",
+  "country",
+  "stateRegion",
+  "city",
+  "contactName",
+  "capabilities",
+  "certifications",
+  "diversityType",
+  "minOrderQuantity",
+  "leadTime",
+  "annualCapacity",
+  "industry",
+  "riskFlags",
+  "dataSource",
+  "businessVerification",
+];
+
+// Privileged fields require superAdmin. `lastVerifiedDate` is grouped here
+// because it is the audit timestamp that backs the `verified` flag — letting
+// a junior admin set it independently would defeat the privilege check on
+// `verified` itself.
+const SUPPLIER_PRIVILEGED_FIELDS = [
+  "verified",
+  "lastVerifiedDate",
+  "isActive",
+  "internalNotes",
+  "buyerMatchRecommendation",
+];
+
+function pickFields(body, fields) {
+  const o = {};
+  if (!body || typeof body !== "object") return o;
+  for (const k of fields) {
+    if (body[k] !== undefined) o[k] = body[k];
+  }
+  return o;
+}
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -139,10 +286,23 @@ export const getSupplierById = async (req, res) => {
 
 /**
  * Create supplier
+ *
+ * C-5: build the create payload from explicit allowlists. supplierNumber is
+ * auto-generated server-side and MUST never be accepted from the request body.
+ * `_id`, `createdAt`, `updatedAt`, `__v` are likewise never honored — pickFields
+ * only copies fields whose names appear in the allowlist.
  */
 export const createSupplier = async (req, res) => {
   try {
-    const supplierData = { ...req.body };
+    const supplierData = pickFields(req.body, SUPPLIER_USER_FIELDS);
+
+    // Privileged fields (`verified`, `isActive`, etc.) only honored for superAdmin.
+    if (req.admin?.role === "superAdmin") {
+      Object.assign(
+        supplierData,
+        pickFields(req.body, SUPPLIER_PRIVILEGED_FIELDS)
+      );
+    }
 
     // Remove empty strings for optional fields
     Object.keys(supplierData).forEach((key) => {
@@ -153,7 +313,9 @@ export const createSupplier = async (req, res) => {
       }
     });
 
-    // Convert lastVerifiedDate string to Date if provided
+    // Convert lastVerifiedDate string to Date if provided. `lastVerifiedDate`
+    // is in SUPPLIER_PRIVILEGED_FIELDS, so this only runs when the caller is
+    // a superAdmin and actually included it on the body.
     if (supplierData.lastVerifiedDate && typeof supplierData.lastVerifiedDate === "string") {
       supplierData.lastVerifiedDate = new Date(supplierData.lastVerifiedDate);
     }
@@ -166,7 +328,7 @@ export const createSupplier = async (req, res) => {
       supplierData.capabilities = [];
     }
 
-    // Auto-generate supplier number
+    // Auto-generate supplier number — NEVER accept from body.
     supplierData.supplierNumber = await generateSupplierNumber();
 
     const supplier = await Supplier.create(supplierData);
@@ -199,11 +361,29 @@ export const createSupplier = async (req, res) => {
 
 /**
  * Update supplier
+ *
+ * C-5: explicit allowlist replaces the previous `findByIdAndUpdate(id, req.body)`
+ * mass-assignment. Privileged fields (`verified`, `isActive`, `internalNotes`,
+ * `buyerMatchRecommendation`) are only honored when the caller is a superAdmin;
+ * a regular admin's PUT silently strips them. `_id`, `createdAt`, `updatedAt`,
+ * `__v`, and `supplierNumber` are never copied because they are not in either
+ * allowlist.
  */
 export const updateSupplier = async (req, res) => {
   try {
     const { id } = req.params;
-    const supplier = await Supplier.findByIdAndUpdate(id, req.body, {
+
+    const update = pickFields(req.body, SUPPLIER_USER_FIELDS);
+    if (req.admin?.role === "superAdmin") {
+      Object.assign(update, pickFields(req.body, SUPPLIER_PRIVILEGED_FIELDS));
+    }
+
+    // String → Date for `lastVerifiedDate` (privileged, superAdmin-only above).
+    if (update.lastVerifiedDate && typeof update.lastVerifiedDate === "string") {
+      update.lastVerifiedDate = new Date(update.lastVerifiedDate);
+    }
+
+    const supplier = await Supplier.findByIdAndUpdate(id, update, {
       new: true,
       runValidators: true,
     });
@@ -288,10 +468,19 @@ export const bulkUploadSuppliers = async (req, res) => {
       });
       rows = results;
     } else if (fileExtension === ".xlsx" || fileExtension === ".xls") {
-      const workbook = xlsx.readFile(filePath);
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      rows = xlsx.utils.sheet_to_json(worksheet);
+      try {
+        rows = await readXlsxAsJson(filePath);
+      } catch (err) {
+        // M-11: surface oversize sheets as 400 instead of leaking a 500.
+        if (err && err.code === "SHEET_TOO_LARGE") {
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          return res.status(400).json({
+            success: false,
+            message: err.message,
+          });
+        }
+        throw err;
+      }
     } else {
       fs.unlinkSync(filePath);
       return res.status(400).json({

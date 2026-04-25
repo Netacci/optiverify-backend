@@ -53,9 +53,19 @@ export const getUsers = async (req, res) => {
       query.subscriptionStatus = subscriptionStatus;
     }
 
-    // Search by email
+    // H-8: search by email — escape regex metacharacters to defeat ReDoS,
+    // and cap the length so attackers can't drive catastrophic backtracking
+    // through sheer input size.
     if (search) {
-      query.email = { $regex: search, $options: "i" };
+      const searchStr = String(search);
+      if (searchStr.length > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "Search query too long (max 100 characters)",
+        });
+      }
+      const safe = searchStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      query.email = { $regex: safe, $options: "i" };
     }
 
     const [users, total] = await Promise.all([
@@ -253,40 +263,128 @@ export const createAdmin = async (req, res) => {
 
 /**
  * Update admin (super admin only)
+ *
+ * M-7 hardening:
+ *   - Whitelist updatable fields: only `email`, `password`, `isActive`,
+ *     `role` (last only by superAdmin) are accepted; everything else is
+ *     silently dropped.
+ *   - Self-edit guard: a non-superAdmin cannot modify their own role
+ *     (defence-in-depth — route already requires superAdmin, but we keep
+ *     this in case middleware is ever loosened).
+ *   - Last-superAdmin guard: the final remaining superAdmin cannot demote
+ *     themselves to `admin` — that would leave the platform with no
+ *     superAdmin and no way to recover without DB access.
+ *   - No admin (even superAdmin) can deactivate themselves.
  */
 export const updateAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, password, isActive } = req.body;
+    const isSelf =
+      req.admin && req.admin._id && id === req.admin._id.toString();
+
+    // M-7: explicit field whitelist. Anything outside this set is dropped.
+    const ALLOWED_FIELDS = ["email", "password", "isActive", "role"];
+    const incoming = req.body || {};
+    const unknownFields = Object.keys(incoming).filter(
+      (k) => !ALLOWED_FIELDS.includes(k)
+    );
+    if (unknownFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Unknown fields: ${unknownFields.join(", ")}`,
+      });
+    }
 
     const updateData = {};
-    if (role) {
-      if (!["admin", "superAdmin"].includes(role)) {
+
+    if (incoming.email !== undefined) {
+      updateData.email = String(incoming.email).toLowerCase().trim();
+    }
+
+    if (incoming.role !== undefined) {
+      if (!["admin", "superAdmin"].includes(incoming.role)) {
         return res.status(400).json({
           success: false,
           message: "Invalid role. Must be 'admin' or 'superAdmin'",
         });
       }
-      updateData.role = role;
-    }
-    if (password) {
-      updateData.password = password;
-    }
-    if (isActive !== undefined) {
-      updateData.isActive = isActive;
+      // M-7: only superAdmin may set role at all (route enforces this too).
+      if (!req.admin || req.admin.role !== "superAdmin") {
+        return res.status(403).json({
+          success: false,
+          message: "Only superAdmin can change roles",
+        });
+      }
+      // M-7: a non-superAdmin can't elevate themselves; redundant with the
+      // route guard but cheap to keep as defence-in-depth.
+      if (isSelf && req.admin.role !== "superAdmin") {
+        return res.status(403).json({
+          success: false,
+          message: "You cannot change your own role",
+        });
+      }
+      updateData.role = incoming.role;
     }
 
-    const admin = await Admin.findByIdAndUpdate(id, updateData, {
-      new: true,
-      runValidators: true,
-    }).select("-password");
+    if (incoming.password !== undefined) {
+      updateData.password = incoming.password;
+    }
 
+    if (incoming.isActive !== undefined) {
+      // M-7: prevent deactivating yourself (would lock you out mid-session).
+      if (isSelf && incoming.isActive === false) {
+        return res.status(400).json({
+          success: false,
+          message: "You cannot deactivate your own account",
+        });
+      }
+      updateData.isActive = incoming.isActive;
+    }
+
+    // M-7: last-superAdmin guard. If a superAdmin is trying to demote
+    // themselves OR deactivate themselves AND they're the only active
+    // superAdmin, refuse. Without this the platform can be left with no
+    // accessible superAdmin.
+    if (isSelf && req.admin.role === "superAdmin") {
+      const demoting = updateData.role && updateData.role !== "superAdmin";
+      const deactivating = updateData.isActive === false;
+      if (demoting || deactivating) {
+        const otherSuperAdmins = await Admin.countDocuments({
+          _id: { $ne: req.admin._id },
+          role: "superAdmin",
+          isActive: true,
+        });
+        if (otherSuperAdmins === 0) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Cannot demote or deactivate the last remaining superAdmin",
+          });
+        }
+      }
+    }
+
+    // Apply updates. We use save() rather than findByIdAndUpdate so the
+    // pre-save bcrypt hook fires on password changes.
+    const admin = await Admin.findById(id);
     if (!admin) {
       return res.status(404).json({
         success: false,
         message: "Admin not found",
       });
     }
+
+    if (updateData.email !== undefined) admin.email = updateData.email;
+    if (updateData.role !== undefined) admin.role = updateData.role;
+    if (updateData.isActive !== undefined)
+      admin.isActive = updateData.isActive;
+    if (updateData.password !== undefined) {
+      admin.password = updateData.password; // pre-save hook hashes
+      // H-4: bump tokenVersion so existing sessions for this admin are revoked.
+      admin.tokenVersion = (admin.tokenVersion || 0) + 1;
+    }
+
+    await admin.save();
 
     res.json({
       success: true,
@@ -310,6 +408,10 @@ export const updateAdmin = async (req, res) => {
 
 /**
  * Delete admin (super admin only)
+ *
+ * M-7 hardening:
+ *   - No admin can delete themselves.
+ *   - Cannot delete the last remaining superAdmin (would lock everyone out).
  */
 export const deleteAdmin = async (req, res) => {
   try {
@@ -323,14 +425,30 @@ export const deleteAdmin = async (req, res) => {
       });
     }
 
-    const admin = await Admin.findByIdAndDelete(id);
-
-    if (!admin) {
+    // Look up target so we can guard the last-superAdmin case.
+    const target = await Admin.findById(id);
+    if (!target) {
       return res.status(404).json({
         success: false,
         message: "Admin not found",
       });
     }
+
+    if (target.role === "superAdmin") {
+      const otherSuperAdmins = await Admin.countDocuments({
+        _id: { $ne: target._id },
+        role: "superAdmin",
+        isActive: true,
+      });
+      if (otherSuperAdmins === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot delete the last remaining superAdmin",
+        });
+      }
+    }
+
+    await Admin.findByIdAndDelete(id);
 
     res.json({
       success: true,

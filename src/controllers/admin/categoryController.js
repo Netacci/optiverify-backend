@@ -1,12 +1,88 @@
 import Category from "../../models/admin/Category.js";
 import multer from "multer";
-import xlsx from "xlsx";
+import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// M-11: replaced unmaintained xlsx with exceljs and added zip-bomb caps.
+// The bulk-subcategory upload previously used `xlsx.readFile` + `sheet_to_json`;
+// we now use the same hardened reader pattern as supplierController.js. Caps
+// match across both controllers so a hostile spreadsheet can't grow the
+// in-memory rows array without bound.
+const MAX_SHEET_ROWS = 10000;
+const MAX_SHEET_COLS = 100;
+
+async function readXlsxAsJson(filePath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+  return sheetToJson(worksheet);
+}
+
+/**
+ * Convert an exceljs worksheet to an array of header-keyed plain objects,
+ * matching the legacy `xlsx.utils.sheet_to_json` shape that downstream code
+ * in this controller depends on. Throws `SHEET_TOO_LARGE` so callers can
+ * convert it into a 400 rather than a generic 500.
+ */
+function sheetToJson(worksheet) {
+  const rowCount = worksheet.actualRowCount || worksheet.rowCount || 0;
+  const colCount = worksheet.actualColumnCount || worksheet.columnCount || 0;
+
+  if (rowCount - 1 > MAX_SHEET_ROWS || colCount > MAX_SHEET_COLS) {
+    const err = new Error(
+      `Worksheet too large: max ${MAX_SHEET_ROWS} data rows and ${MAX_SHEET_COLS} columns allowed (got ${Math.max(rowCount - 1, 0)} rows, ${colCount} columns).`
+    );
+    err.code = "SHEET_TOO_LARGE";
+    throw err;
+  }
+
+  const headerRow = worksheet.getRow(1);
+  const headers = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    const raw = cell.value;
+    headers[colNumber - 1] =
+      raw == null || raw === ""
+        ? null
+        : typeof raw === "object" && raw.text
+        ? String(raw.text)
+        : String(raw);
+  });
+
+  const rows = [];
+  for (let r = 2; r <= rowCount; r++) {
+    const row = worksheet.getRow(r);
+    const obj = {};
+    let hasValue = false;
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const key = headers[colNumber - 1];
+      if (!key) return;
+      obj[key] = normalizeCellValue(cell.value);
+      hasValue = true;
+    });
+    if (hasValue) rows.push(obj);
+  }
+  return rows;
+}
+
+function normalizeCellValue(value) {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") {
+    if ("text" in value) return String(value.text);
+    if ("result" in value) return String(value.result ?? "");
+    if ("richText" in value && Array.isArray(value.richText)) {
+      return value.richText.map((rt) => rt.text || "").join("");
+    }
+    if ("hyperlink" in value) return String(value.text || value.hyperlink || "");
+  }
+  return value;
+}
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -428,9 +504,19 @@ export const bulkUploadSubcategories = async (req, res) => {
       });
       rows = results;
     } else if (fileExtension === ".xlsx" || fileExtension === ".xls") {
-      const workbook = xlsx.readFile(filePath);
-      const sheetName = workbook.SheetNames[0];
-      rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+      try {
+        rows = await readXlsxAsJson(filePath);
+      } catch (err) {
+        // M-11: oversize sheets are a client error, not a server error.
+        if (err && err.code === "SHEET_TOO_LARGE") {
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          return res.status(400).json({
+            success: false,
+            message: err.message,
+          });
+        }
+        throw err;
+      }
     } else {
       fs.unlinkSync(filePath);
       return res.status(400).json({

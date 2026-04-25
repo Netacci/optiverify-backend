@@ -1,8 +1,32 @@
 import jwt from "jsonwebtoken";
 import User from "../models/common/User.js";
 
-const JWT_SECRET =
-  process.env.JWT_SECRET || "your-jwt-secret-key-change-in-production";
+// ========== C-2: fail-closed secret resolution ==========
+const KNOWN_DEFAULTS = new Set([
+  "your-jwt-secret-key-change-in-production",
+  "your-secret-key-change-in-production",
+  "change-me",
+  "secret",
+  "jwt-secret",
+]);
+
+function requireSecret(name) {
+  const v = process.env[name];
+  if (!v || v.length < 32 || KNOWN_DEFAULTS.has(v)) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `[SECURITY] ${name} must be set to a strong (>=32 char) non-default secret in production`
+      );
+    }
+    console.warn(
+      `⚠️  [SECURITY] ${name} is missing/weak/default — failing closed in non-production mode is OFF, but DEPLOY WILL FAIL. Set ${name} to a strong random value.`
+    );
+    return v || `dev-only-insecure-${name}-${Date.now()}`;
+  }
+  return v;
+}
+
+const JWT_SECRET = requireSecret("JWT_SECRET");
 
 /**
  * Verify JWT token from cookie
@@ -50,6 +74,18 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
+    // H-4: Token revocation via tokenVersion
+    // If the token's version doesn't match the current user version, it has been revoked
+    // (e.g. via logout, password reset, or password creation).
+    const tokenV = typeof decoded.v === "number" ? decoded.v : 0;
+    const userV = typeof user.tokenVersion === "number" ? user.tokenVersion : 0;
+    if (tokenV !== userV) {
+      return res.status(401).json({
+        success: false,
+        message: "Token revoked",
+      });
+    }
+
     // Attach user to request
     req.user = user;
     next();
@@ -75,10 +111,27 @@ export const authenticate = async (req, res, next) => {
 
 /**
  * Generate JWT token
+ *
+ * H-4: accepts the full user object so the current `tokenVersion` is embedded
+ * in the signed payload. This enables server-side revocation.
+ *
+ * Backwards-compatibility: legacy callers may still pass a string userId.
+ * In that case we sign with v=0 (matches the schema default) so existing
+ * accounts keep working until the next logout/password change bumps the
+ * version.
  */
-export const generateToken = (userId) => {
-  return jwt.sign({ userId }, JWT_SECRET, {
-    expiresIn: "30d", // 30 days
+export const generateToken = (userOrId) => {
+  let userId;
+  let v = 0;
+  if (userOrId && typeof userOrId === "object") {
+    userId = userOrId._id ? userOrId._id.toString() : String(userOrId);
+    v = typeof userOrId.tokenVersion === "number" ? userOrId.tokenVersion : 0;
+  } else {
+    userId = String(userOrId);
+  }
+  // H-4: reduced lifetime from 30d → 7d
+  return jwt.sign({ userId, v }, JWT_SECRET, {
+    expiresIn: "7d",
   });
 };
 
@@ -99,7 +152,13 @@ export const optionalAuth = async (req, res, next) => {
         if (decoded.userId && !decoded.adminId) {
           const user = await User.findById(decoded.userId).select("-password");
           if (user) {
-            req.user = user;
+            // H-4: enforce tokenVersion match in optionalAuth too
+            const tokenV = typeof decoded.v === "number" ? decoded.v : 0;
+            const userV =
+              typeof user.tokenVersion === "number" ? user.tokenVersion : 0;
+            if (tokenV === userV) {
+              req.user = user;
+            }
           }
         }
       } catch (error) {

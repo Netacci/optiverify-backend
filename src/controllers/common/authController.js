@@ -1,9 +1,21 @@
+import bcrypt from "bcryptjs";
 import User from "../../models/common/User.js";
 import BuyerRequest from "../../models/customer/BuyerRequest.js";
 import Payment from "../../models/customer/Payment.js";
 import { generateToken } from "../../middleware/auth.js";
 import { verifyToken } from "../../services/tokenService.js";
 import { sendVerificationEmail } from "../../services/emailService.js";
+import {
+  COMMON_PASSWORDS,
+  validatePasswordStrength,
+  DUMMY_BCRYPT_HASH,
+  MAX_FAILED_LOGINS,
+  LOCKOUT_DURATION_MS,
+} from "../../services/passwordPolicy.js";
+
+// H-5: keep the generic-login-error string local to this file — it's only used
+// by the customer login response copy. The admin controller uses its own copy.
+const GENERIC_LOGIN_ERROR = "Invalid credentials";
 
 // Helper to sync payments for a user (blocking)
 // Exported for use in emergency session endpoint
@@ -227,15 +239,15 @@ export const syncPaymentsForUser = async (user) => {
               };
               const getMaxRolloverCredits = async (planType) => {
                 const Plan = (await import("../../models/admin/Plan.js")).default;
-                
+
                 let dbPlanType = planType;
                 if (planType.includes("_")) {
                   dbPlanType = planType.split("_")[0];
                 }
 
-                const plan = await Plan.findOne({ 
+                const plan = await Plan.findOne({
                   planType: dbPlanType,
-                  isActive: true 
+                  isActive: true
                 });
 
                 if (plan) {
@@ -460,10 +472,12 @@ export const createPassword = async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
+    // H-2: enforce strong password policy
+    const pwCheck = validatePasswordStrength(password);
+    if (!pwCheck.ok) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message: pwCheck.reason,
       });
     }
 
@@ -596,7 +610,7 @@ export const createPassword = async (req, res) => {
         };
         const getMaxRolloverCredits = async (planType) => {
           const Plan = (await import("../../models/admin/Plan.js")).default;
-          
+
           let dbPlanType = planType;
           if (planType.includes("_")) {
             dbPlanType = planType.split("_")[0];
@@ -669,17 +683,23 @@ export const createPassword = async (req, res) => {
 
     // Set password
     user.password = password;
+    // H-4: bump tokenVersion on password creation so any pre-existing tokens
+    // (e.g. emailed report-token sessions) are invalidated.
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    // H-5: clear any lockout/failed-login state on successful password creation.
+    user.failedLoginCount = 0;
+    user.lockedUntil = undefined;
     await user.save();
 
-    // Generate JWT token
-    const jwtToken = generateToken(user._id.toString());
+    // Generate JWT token (H-4: pass full user so tokenVersion is embedded)
+    const jwtToken = generateToken(user);
 
     // Set cookie (customer token)
     res.cookie("cd-token", jwtToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 7 * 24 * 60 * 60 * 1000, // H-4: 7 days (was 30)
     });
 
     res.json({
@@ -717,16 +737,38 @@ export const login = async (req, res) => {
       });
     }
 
-    // Find user
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const userEmail = String(email).toLowerCase().trim();
+
+    // Find user. We deliberately do NOT branch the response on user existence —
+    // the not-found path performs a dummy bcrypt compare so timing stays
+    // constant (M-3) and returns the same generic error as wrong-password.
+    const user = await User.findOne({ email: userEmail });
+
     if (!user) {
+      // M-3: constant-time compare against a fixed dummy hash so attackers
+      // cannot enumerate registered emails by login latency.
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password",
+        message: GENERIC_LOGIN_ERROR,
+      });
+    }
+
+    // H-5: lockout enforcement — reject before checking password.
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      // Still burn comparable CPU on the dummy hash so timing doesn't leak
+      // the locked vs unlocked distinction.
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+      return res.status(401).json({
+        success: false,
+        message: GENERIC_LOGIN_ERROR,
       });
     }
 
     if (!user.isVerified) {
+      // Keep the explicit verification-required signal — this is a UX state,
+      // not an enumeration vector (the email is already known to belong to
+      // someone trying to verify it).
       return res.status(401).json({
         success: false,
         message: "Please verify your email first",
@@ -743,25 +785,43 @@ export const login = async (req, res) => {
     // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      // H-5: track failed attempts and lock after MAX_FAILED_LOGINS.
+      user.failedLoginCount = (user.failedLoginCount || 0) + 1;
+      if (user.failedLoginCount >= MAX_FAILED_LOGINS) {
+        user.lockedUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
+      }
+      await user.save();
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password",
+        message: GENERIC_LOGIN_ERROR,
       });
     }
+
+    // Successful login — reset lockout state.
+    user.failedLoginCount = 0;
+    user.lockedUntil = undefined;
+
+    // M-12: silent bcrypt rehash. If the stored hash uses fewer rounds than
+    // the current target, re-hash by reassigning the plaintext (the pre-save
+    // hook handles the rest).
+    if (typeof user.needsRehash === "function" && user.needsRehash()) {
+      user.password = password;
+    }
+    await user.save();
 
     // Automatically sync payments (BLOCKING)
     // This ensures subscriptions and payments are up-to-date BEFORE sending response
     await syncPaymentsForUser(user);
 
-    // Generate JWT token
-    const token = generateToken(user._id.toString());
+    // Generate JWT token (H-4: pass full user so tokenVersion is embedded)
+    const token = generateToken(user);
 
     // Set cookie
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 7 * 24 * 60 * 60 * 1000, // H-4: 7 days (was 30)
     });
 
     res.json({
@@ -789,9 +849,28 @@ export const login = async (req, res) => {
 
 /**
  * Logout user
+ *
+ * H-4: bumps tokenVersion BEFORE clearing the cookie so any other live
+ * sessions (other tabs, leaked tokens) are immediately revoked at the next
+ * authenticate() call.
  */
 export const logout = async (req, res) => {
+  try {
+    if (req.user && req.user._id) {
+      // Re-fetch a writable doc — req.user came in via .select("-password")
+      // and may be a lean projection.
+      const user = await User.findById(req.user._id);
+      if (user) {
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
+        await user.save();
+      }
+    }
+  } catch (e) {
+    // Don't fail logout on a token-bump error — still clear cookie.
+    console.error("Error bumping tokenVersion on logout:", e);
+  }
   res.clearCookie("cd-token");
+  res.clearCookie("token");
   res.json({
     success: true,
     message: "Logged out successfully",
@@ -833,9 +912,19 @@ export const getCurrentUser = async (req, res) => {
 
 /**
  * Resend verification email
+ *
+ * M-3: returns the same response regardless of whether the email exists or
+ * is already verified, so attackers cannot enumerate accounts via this
+ * endpoint.
  */
 export const resendVerification = async (req, res) => {
-  console.log("resendVerification called with body:", req.body);
+  console.log("resendVerification called");
+  const GENERIC_OK = {
+    success: true,
+    message:
+      "If an account exists for that email, a verification email has been sent.",
+  };
+
   try {
     const { email } = req.body;
 
@@ -846,15 +935,14 @@ export const resendVerification = async (req, res) => {
       });
     }
 
-    const userEmail = email.toLowerCase().trim();
+    const userEmail = String(email).toLowerCase().trim();
 
-    // Check if user exists
+    // Check if user exists. We must not vary the response based on existence
+    // or verified-state — short-circuit to the generic OK in any branch where
+    // we can't or shouldn't actually send mail.
     const user = await User.findOne({ email: userEmail });
     if (user && user.isVerified) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is already verified. Please log in.",
-      });
+      return res.json(GENERIC_OK);
     }
 
     // Find latest activity to determine context
@@ -890,38 +978,37 @@ export const resendVerification = async (req, res) => {
       "verification"
     );
 
-    // Send email
-    if (
-      payment ||
-      (managedService && managedService.serviceFeeStatus === "paid")
-    ) {
-      // If they paid, send the nice payment confirmation + verify email
-      await sendPaymentAndVerificationEmail({
-        email: userEmail,
-        requestId: requestId ? requestId.toString() : "general",
-        planType: planType,
-        verificationToken: token,
-      });
-    } else {
-      // Standard verification
-      await sendVerificationEmail({
-        email: userEmail,
-        requestId: requestId ? requestId.toString() : "general",
-        token: token,
-        isNewRequest: true,
-      });
+    // Send email — but only when the user actually exists or there's a
+    // pending payment/managed-service for this address. Anonymous bursts
+    // against this endpoint will still get the generic OK with no email
+    // actually delivered.
+    if (user || managedService || payment) {
+      if (
+        payment ||
+        (managedService && managedService.serviceFeeStatus === "paid")
+      ) {
+        await sendPaymentAndVerificationEmail({
+          email: userEmail,
+          requestId: requestId ? requestId.toString() : "general",
+          planType: planType,
+          verificationToken: token,
+        });
+      } else {
+        await sendVerificationEmail({
+          email: userEmail,
+          requestId: requestId ? requestId.toString() : "general",
+          token: token,
+          isNewRequest: true,
+        });
+      }
     }
 
-    res.json({
-      success: true,
-      message: "Verification email sent",
-    });
+    return res.json(GENERIC_OK);
   } catch (error) {
     console.error("Error resending verification:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-    });
+    // Even on internal error, prefer the generic OK to avoid revealing
+    // whether the address triggered a code path that exists for this user.
+    return res.json(GENERIC_OK);
   }
 };
 
@@ -1009,10 +1096,12 @@ export const resetPassword = async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
+    // H-2: enforce strong password policy
+    const pwCheck = validatePasswordStrength(password);
+    if (!pwCheck.ok) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message: pwCheck.reason,
       });
     }
 
@@ -1036,6 +1125,11 @@ export const resetPassword = async (req, res) => {
 
     // Update password (will be hashed by pre-save hook)
     user.password = password;
+    // H-4: bump tokenVersion to revoke all existing sessions on password reset.
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    // H-5: clear lockout/failed-login state.
+    user.failedLoginCount = 0;
+    user.lockedUntil = undefined;
     await user.save();
 
     res.json({
@@ -1059,7 +1153,7 @@ export const resetPassword = async (req, res) => {
 export const emergencySessionSync = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,

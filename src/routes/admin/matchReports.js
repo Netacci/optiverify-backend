@@ -1,5 +1,6 @@
 import express from "express";
 import { authenticateAdmin } from "../../middleware/adminAuth.js";
+import { requireCsrf } from "../../middleware/csrf.js";
 import {
   getAllMatchReports,
   getMatchReportDetails,
@@ -8,7 +9,9 @@ import {
 
 const router = express.Router();
 
+// M-6: auth + CSRF double-submit on all non-safe methods.
 router.use(authenticateAdmin);
+router.use(requireCsrf);
 
 // GET /api/admin/match-reports - Get all match reports
 router.get("/", getAllMatchReports);

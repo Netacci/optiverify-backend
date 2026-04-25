@@ -1,6 +1,31 @@
 import crypto from "crypto";
 
-const SECRET = process.env.TOKEN_SECRET || "your-secret-key-change-in-production";
+// ========== C-2: fail-closed secret resolution ==========
+const KNOWN_DEFAULTS = new Set([
+  "your-jwt-secret-key-change-in-production",
+  "your-secret-key-change-in-production",
+  "change-me",
+  "secret",
+  "jwt-secret",
+]);
+
+function requireSecret(name) {
+  const v = process.env[name];
+  if (!v || v.length < 32 || KNOWN_DEFAULTS.has(v)) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `[SECURITY] ${name} must be set to a strong (>=32 char) non-default secret in production`
+      );
+    }
+    console.warn(
+      `⚠️  [SECURITY] ${name} is missing/weak/default — failing closed in non-production mode is OFF, but DEPLOY WILL FAIL. Set ${name} to a strong random value.`
+    );
+    return v || `dev-only-insecure-${name}-${Date.now()}`;
+  }
+  return v;
+}
+
+const SECRET = requireSecret("TOKEN_SECRET");
 const TOKEN_EXPIRY = {
   payment: 30 * 24 * 60 * 60 * 1000, // 30 days
   verification: 24 * 60 * 60 * 1000, // 24 hours

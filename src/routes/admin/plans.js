@@ -7,13 +7,16 @@ import {
   deletePlan,
 } from "../../controllers/admin/planController.js";
 import { authenticateAdmin } from "../../middleware/adminAuth.js";
+import { requireCsrf } from "../../middleware/csrf.js";
 import { requireAdmin } from "../../controllers/admin/adminController.js";
 
 const router = express.Router();
 
-// All plan routes require admin authentication
+// All plan routes require admin authentication.
+// M-6: CSRF check applied AFTER auth + role check; safe methods bypass it.
 router.use(authenticateAdmin);
 router.use(requireAdmin);
+router.use(requireCsrf);
 
 // GET /api/admin/plans - Get all plans
 router.get("/", getPlans);

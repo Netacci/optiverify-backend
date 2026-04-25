@@ -11,6 +11,24 @@ const CUSTOMER_DASHBOARD_URL =
   process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004";
 
 /**
+ * C-4: HTML-escape any user-controlled string before interpolating into HTML.
+ * Use this for every field originating from external input (contact form,
+ * buyer request body, supplier-supplied data, etc.) — NEVER for server-derived
+ * content like URLs, plan names, or template literals built from config.
+ *
+ * Escapes: & < > " ' (the standard XSS-safe entity set for HTML body context).
+ */
+function escapeHtml(s) {
+  if (s === null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+/**
  * Send payment confirmation email with secure report link
  */
 export const sendPaymentConfirmationEmail = async ({
@@ -505,6 +523,10 @@ export const sendManagedServiceReceiptEmail = async ({
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+  // C-4: itemName and category are user-supplied; escape before HTML interpolation.
+  const safeItemName = escapeHtml(itemName);
+  const safeCategory = escapeHtml(category);
+  const safeTransactionId = escapeHtml(transactionId);
   try {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
@@ -533,12 +555,12 @@ export const sendManagedServiceReceiptEmail = async ({
                   <strong>Receipt Details:</strong>
                 </p>
                 <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Transaction ID:</strong> ${transactionId || requestId.slice(-8)}
+                  <strong>Transaction ID:</strong> ${safeTransactionId || requestId.slice(-8)}
                 </p>
                 <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Item:</strong> ${itemName}
+                  <strong>Item:</strong> ${safeItemName}
                 </p>
-                ${category ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;"><strong>Category:</strong> ${category}</p>` : ""}
+                ${category ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;"><strong>Category:</strong> ${safeCategory}</p>` : ""}
                 <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
                   <strong>Reference:</strong> #${requestId.slice(-8)}
                 </p>
@@ -627,6 +649,12 @@ export const sendMatchPaymentReceiptEmail = async ({
     extra_credit: "Credit Top-Up",
   };
 
+  // C-4: escape user-controlled fields before HTML interpolation.
+  const safeMRItemName = escapeHtml(itemName);
+  const safeMRCategory = escapeHtml(category);
+  const safeMRTransactionId = escapeHtml(transactionId);
+  const safeMRPlanLabel = escapeHtml(planLabels[planType] || planType || "");
+
   try {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
@@ -656,7 +684,7 @@ export const sendMatchPaymentReceiptEmail = async ({
                 <table style="width: 100%; border-collapse: collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 45%;">Transaction ID</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827; font-family: monospace;">${transactionId}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827; font-family: monospace;">${safeMRTransactionId}</td>
                   </tr>
                   <tr style="border-top: 1px solid #e5e7eb;">
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Payment Date</td>
@@ -665,17 +693,17 @@ export const sendMatchPaymentReceiptEmail = async ({
                   ${itemName ? `
                   <tr style="border-top: 1px solid #e5e7eb;">
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Item Searched</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${itemName}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRItemName}</td>
                   </tr>` : ""}
                   ${category ? `
                   <tr style="border-top: 1px solid #e5e7eb;">
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Category</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${category}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRCategory}</td>
                   </tr>` : ""}
                   ${planType ? `
                   <tr style="border-top: 1px solid #e5e7eb;">
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Plan</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${planLabels[planType] || planType}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRPlanLabel}</td>
                   </tr>` : ""}
                   <tr style="border-top: 1px solid #e5e7eb;">
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Amount Paid</td>
@@ -754,10 +782,28 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
          </tr>`
       : "";
 
+  // C-4: Escape every user-controlled managedService field before HTML interpolation.
+  const safeMS = {
+    itemName: escapeHtml(managedService.itemName),
+    category: escapeHtml(managedService.category),
+    subCategory: escapeHtml(managedService.subCategory),
+    quantity: escapeHtml(managedService.quantity),
+    estimatedSpendRange: escapeHtml(managedService.estimatedSpendRange),
+    deliveryLocation: escapeHtml(managedService.deliveryLocation),
+    urgency: escapeHtml(managedService.urgency),
+    complianceLevel: escapeHtml(managedService.complianceLevel),
+    email: escapeHtml(managedService.email),
+  };
+  const safeUserEmail = escapeHtml(userEmail);
+  const categoryDisplay =
+    safeMS.category +
+    (managedService.subCategory ? ` &gt; ${safeMS.subCategory}` : "");
+
   try {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: "sourcing@optiverifi.com",
+      // Note: subject is plain text, not HTML; use raw values here.
       subject: `New Managed Sourcing Request — ${managedService.itemName} (${managedService.category})`,
       html: `
         <!DOCTYPE html>
@@ -781,7 +827,7 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
                 <table style="width: 100%; border-collapse: collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${userEmail || managedService.email}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeUserEmail || safeMS.email}</td>
                   </tr>
                   ${row("Request ID", managedService._id?.toString())}
                 </table>
@@ -792,16 +838,16 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
                 <table style="width: 100%; border-collapse: collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
-                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${managedService.itemName}</td>
+                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${safeMS.itemName}</td>
                   </tr>
-                  ${row("Category", managedService.category + (managedService.subCategory ? ` > ${managedService.subCategory}` : ""))}
-                  ${row("Quantity", managedService.quantity)}
-                  ${row("Budget Range", managedService.estimatedSpendRange)}
-                  ${row("Delivery Location", managedService.deliveryLocation)}
+                  ${row("Category", categoryDisplay)}
+                  ${row("Quantity", safeMS.quantity)}
+                  ${row("Budget Range", safeMS.estimatedSpendRange)}
+                  ${row("Delivery Location", safeMS.deliveryLocation)}
                   ${row("Deadline", deadline)}
-                  ${row("Urgency", managedService.urgency)}
-                  ${row("Compliance Level", managedService.complianceLevel)}
-                  ${managedService.description ? row("Description", managedService.description.replace(/</g, "&lt;").replace(/>/g, "&gt;")) : ""}
+                  ${row("Urgency", safeMS.urgency)}
+                  ${row("Compliance Level", safeMS.complianceLevel)}
+                  ${managedService.description ? row("Description", escapeHtml(managedService.description)) : ""}
                 </table>
               </div>
             </div>
@@ -848,10 +894,34 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
          </tr>`
       : "";
 
+  // C-4: Escape every user-controlled buyerRequest field before HTML interpolation.
+  const safeBR = {
+    name: escapeHtml(buyerRequest.name),
+    category: escapeHtml(buyerRequest.category),
+    subCategory: escapeHtml(buyerRequest.subCategory),
+    quantity: escapeHtml(buyerRequest.quantity),
+    timeline: escapeHtml(buyerRequest.timeline),
+    location: escapeHtml(buyerRequest.location),
+    requirements: escapeHtml(buyerRequest.requirements),
+    email: escapeHtml(buyerRequest.email),
+  };
+  const safeUserEmailMatch = escapeHtml(userEmail);
+  const safePlanLabel = escapeHtml(planLabels[planType] || planType || "");
+  const brCategoryDisplay =
+    safeBR.category +
+    (buyerRequest.subCategory ? ` &gt; ${safeBR.subCategory}` : "");
+  // unitPrice is numeric server data, not free-text — but escape defensively
+  // in case the schema ever loosens.
+  const safeUnitPrice =
+    buyerRequest.unitPrice != null
+      ? `$${escapeHtml(buyerRequest.unitPrice)}`
+      : null;
+
   try {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: "info@optiverifi.com",
+      // Note: subject is plain text, not HTML; raw values are fine here.
       subject: `New Match Request Payment — ${buyerRequest.name} (${buyerRequest.category})`,
       html: `
         <!DOCTYPE html>
@@ -866,7 +936,7 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
             <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
               <div style="background: #ecfdf5; padding: 14px 18px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 28px;">
                 <p style="margin: 0; font-size: 14px; color: #065f46;">
-                  <strong>Payment received</strong> for a ${planLabels[planType] || planType || "match"} plan.
+                  <strong>Payment received</strong> for a ${safePlanLabel || "match"} plan.
                 </p>
               </div>
 
@@ -875,9 +945,9 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
                 <table style="width: 100%; border-collapse: collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${userEmail || buyerRequest.email}</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeUserEmailMatch || safeBR.email}</td>
                   </tr>
-                  ${row("Plan", planLabels[planType] || planType)}
+                  ${row("Plan", safePlanLabel)}
                 </table>
               </div>
 
@@ -886,15 +956,15 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
                 <table style="width: 100%; border-collapse: collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
-                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${buyerRequest.name}</td>
+                    <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${safeBR.name}</td>
                   </tr>
-                  ${row("Category", buyerRequest.category + (buyerRequest.subCategory ? ` > ${buyerRequest.subCategory}` : ""))}
-                  ${row("Quantity", buyerRequest.quantity)}
-                  ${row("Unit Price", buyerRequest.unitPrice != null ? `$${buyerRequest.unitPrice}` : null)}
-                  ${row("Timeline / Deadline", buyerRequest.timeline)}
-                  ${row("Delivery Location", buyerRequest.location)}
-                  ${row("Requirements", buyerRequest.requirements)}
-                  ${buyerRequest.description ? row("Description", buyerRequest.description.replace(/</g, "&lt;").replace(/>/g, "&gt;")) : ""}
+                  ${row("Category", brCategoryDisplay)}
+                  ${row("Quantity", safeBR.quantity)}
+                  ${row("Unit Price", safeUnitPrice)}
+                  ${row("Timeline / Deadline", safeBR.timeline)}
+                  ${row("Delivery Location", safeBR.location)}
+                  ${row("Requirements", safeBR.requirements)}
+                  ${buyerRequest.description ? row("Description", escapeHtml(buyerRequest.description)) : ""}
                 </table>
               </div>
             </div>
@@ -922,6 +992,12 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
 
 /**
  * Send contact form email to support
+ *
+ * C-4: All user-controlled fields (name, email, company, role, message) MUST be
+ * HTML-escaped via escapeHtml() before being interpolated into the body.
+ * The contact form is unauthenticated, so any unescaped interpolation here is a
+ * stored-phishing vector aimed at internal staff. Also caps message length to
+ * 5000 characters to bound abuse.
  */
 export const sendContactEmail = async ({
   name,
@@ -940,11 +1016,26 @@ export const sendContactEmail = async ({
       other: "Other",
     };
 
+    // C-4: bound message length, then escape every field that flows into HTML.
+    const MESSAGE_CAP = 5000;
+    const rawMessage = String(message ?? "");
+    const cappedMessage =
+      rawMessage.length > MESSAGE_CAP
+        ? rawMessage.slice(0, MESSAGE_CAP) + "…[truncated]"
+        : rawMessage;
+
+    const safeName = escapeHtml(name);
+    const safeEmail = escapeHtml(email);
+    const safeCompany = escapeHtml(company);
+    const safeRole = escapeHtml(role);
+    const safeRoleLabel = escapeHtml(roleLabels[role] || role || "");
+    const safeMessage = escapeHtml(cappedMessage);
+
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: supportEmail,
       replyTo: email,
-      subject: `Contact Form Submission from ${name}`,
+      subject: `Contact Form Submission from ${safeName}`,
       html: `
         <!DOCTYPE html>
         <html>
@@ -957,40 +1048,40 @@ export const sendContactEmail = async ({
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
               <h1 style="color: white; margin: 0; font-size: 28px;">New Contact Form Submission</h1>
             </div>
-            
+
             <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
               <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
                 <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Name:</strong> ${name}
+                  <strong style="color: #374151;">Name:</strong> ${safeName}
                 </p>
                 <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Email:</strong> <a href="mailto:${email}" style="color: #667eea;">${email}</a>
+                  <strong style="color: #374151;">Email:</strong> <a href="mailto:${safeEmail}" style="color: #667eea;">${safeEmail}</a>
                 </p>
                 ${
                   company
                     ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Company:</strong> ${company}
+                  <strong style="color: #374151;">Company:</strong> ${safeCompany}
                 </p>`
                     : ""
                 }
                 ${
                   role
                     ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Role:</strong> ${roleLabels[role] || role}
+                  <strong style="color: #374151;">Role:</strong> ${safeRoleLabel || safeRole}
                 </p>`
                     : ""
                 }
               </div>
-              
+
               <div style="margin-top: 30px;">
                 <h2 style="font-size: 18px; color: #374151; margin-bottom: 15px;">Message:</h2>
                 <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
-                  <p style="margin: 0; font-size: 14px; color: #374151; white-space: pre-wrap;">${message}</p>
+                  <p style="margin: 0; font-size: 14px; color: #374151; white-space: pre-wrap;">${safeMessage}</p>
                 </div>
               </div>
-              
+
             </div>
-            
+
             <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
               <p style="font-size: 12px; color: #9ca3af;">
                 © ${new Date().getFullYear()} Optiverifi. All rights reserved.

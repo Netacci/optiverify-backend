@@ -192,13 +192,17 @@ const getPricingPlans = async () => {
 // Create Stripe checkout session
 export const createCheckoutSession = async (req, res) => {
   try {
-    const { requestId, planType, email, quantity } = req.body;
+    // C-7 + H-3: Ignore any client-supplied amount/userId. Derive everything
+    // server-side from the authenticated user + DB record.
+    const { requestId, planType, quantity } = req.body;
+    const clientEmailRaw = req.body.email;
 
     console.log(`[createCheckoutSession] Received request:`, {
       requestId,
       planType,
-      email,
       quantity,
+      hasClientEmail: !!clientEmailRaw,
+      authenticated: !!req.user,
     });
 
     if (!requestId || !planType) {
@@ -208,23 +212,30 @@ export const createCheckoutSession = async (req, res) => {
       });
     }
 
-    // Check if user is authenticated (req.user would be set by middleware if we use it)
-    // But this route might be public. Let's check if we can verify the user.
+    // Check if user is authenticated (req.user would be set by optionalAuth middleware)
     let isUserVerified = false;
     let user = null;
+    const isAuthenticated = !!req.user;
 
     if (req.user) {
       user = req.user;
       if (user && user.isVerified) {
         isUserVerified = true;
       }
-    } else if (email) {
+    } else if (clientEmailRaw) {
+      // Unauthenticated public flow — accept the posted email but stamp the
+      // session as unauthenticated for ops visibility.
       const User = (await import("../../models/common/User.js")).default;
-      user = await User.findOne({ email: email.toLowerCase().trim() });
+      user = await User.findOne({
+        email: clientEmailRaw.toLowerCase().trim(),
+      });
       if (user && user.isVerified) {
         isUserVerified = true;
       }
     }
+
+    // Server-derived email: prefer authenticated identity, fallback to body for unauth flow.
+    const email = req.user?.email || clientEmailRaw;
 
     // Validate email is required (except for enterprise)
     if (planType !== "enterprise" && (!email || !email.trim())) {
@@ -247,19 +258,53 @@ export const createCheckoutSession = async (req, res) => {
 
     // Get match report (optional for extra_credit top-up)
     let matchReport = null;
+    let ownedBuyerRequest = null;
     if (requestId !== "general") {
+      // C-7: Look up the request first so we can verify ownership before any
+      // Stripe metadata is built. Authenticated users may only check out for
+      // their own request.
+      ownedBuyerRequest = await BuyerRequest.findById(requestId);
+      if (!ownedBuyerRequest && planType !== "extra_credit") {
+        return res.status(404).json({
+          success: false,
+          message: "Request not found",
+        });
+      }
+
+      // Ownership check: when authenticated, the authenticated user must own
+      // this request. Check by userId if present (post H-7 migration), else
+      // fall back to case-insensitive email match.
+      if (isAuthenticated && ownedBuyerRequest) {
+        const reqUserEmail = (req.user.email || "").toLowerCase().trim();
+        const reqRecordEmail = (ownedBuyerRequest.email || "")
+          .toLowerCase()
+          .trim();
+        // TODO(H-7): once BuyerRequest.userId is backfilled, prefer userId
+        // equality and treat email as a deprecated fallback only.
+        const userIdMatches =
+          ownedBuyerRequest.userId &&
+          ownedBuyerRequest.userId.equals?.(req.user._id);
+        const emailMatches =
+          !ownedBuyerRequest.userId &&
+          reqUserEmail &&
+          reqUserEmail === reqRecordEmail;
+        if (!userIdMatches && !emailMatches) {
+          console.warn(
+            `[createCheckoutSession] Ownership check FAILED for user ${req.user._id} on request ${requestId} (record email=${reqRecordEmail})`
+          );
+          return res.status(403).json({
+            success: false,
+            message: "Forbidden: you do not own this request",
+          });
+        }
+      }
+
       matchReport = await MatchReport.findOne({ requestId });
 
       // If match report doesn't exist, check if request exists and create a pending match report
       // This happens when authenticated users submit requests without active subscription/credits
       if (!matchReport && planType !== "extra_credit") {
-        const buyerRequest = await BuyerRequest.findById(requestId);
-        if (!buyerRequest) {
-          return res.status(404).json({
-            success: false,
-            message: "Request not found",
-          });
-        }
+        const buyerRequest = ownedBuyerRequest;
 
         // Create a pending match report for authenticated users who need to pay
         matchReport = new MatchReport({
@@ -381,6 +426,21 @@ export const createCheckoutSession = async (req, res) => {
       "verification"
     );
 
+    // C-7 + H-3: Server-derived customer_email — never trust the client.
+    // For authenticated users we use the JWT-bound email; for unauthenticated
+    // public flows (optionalAuth) we accept the posted email but flag the
+    // session as unauthenticated for ops visibility. We never read amount or
+    // userId from req.body; userId is read from req.user._id only.
+    const serverDerivedEmail = (
+      req.user?.email ||
+      ownedBuyerRequest?.email ||
+      email ||
+      matchReport?.email ||
+      ""
+    )
+      .toLowerCase()
+      .trim();
+
     // Create Stripe checkout session
     const sessionParams = {
       payment_method_types: ["card"],
@@ -399,13 +459,17 @@ export const createCheckoutSession = async (req, res) => {
               process.env.FRONTEND_URL || "http://localhost:3002"
             }/payment-plans?requestId=${requestId}&canceled=true`,
       client_reference_id: requestId,
-      customer_email: email || matchReport?.email || email,
+      customer_email: serverDerivedEmail,
       metadata: {
         requestId: requestId.toString(),
         matchReportId: matchReport?._id?.toString() || "none",
         planType,
         verificationToken, // Store verification token in metadata for webhook
         isTopUp: planType === "extra_credit" ? "true" : "false",
+        // Server-derived ownership/identity — never read these from req.body.
+        userId: req.user?._id?.toString() || "",
+        userIsVerified: isUserVerified ? "true" : "false",
+        unauthenticated: isAuthenticated ? "false" : "true",
       },
     };
 
@@ -663,22 +727,35 @@ export const createCheckoutSession = async (req, res) => {
 // Handle Stripe webhook
 export const handleWebhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
-  const webhookSecret =
-    process.env.STRIPE_WEBHOOK_SECRET || "whsec_dummy_secret";
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  // C-1 + C-7: Hard-fail closed if webhook verification can't be performed.
+  // NEVER bypass signature verification — an unsigned body is untrusted input.
+  if (
+    !stripe ||
+    !webhookSecret ||
+    webhookSecret.includes("dummy") ||
+    webhookSecret === "whsec_dummy_secret"
+  ) {
+    console.error(
+      "[Webhook] REFUSING webhook — Stripe is not properly configured. " +
+        `stripe=${!!stripe}, webhookSecret=${
+          webhookSecret ? "set" : "missing"
+        }, secretIsDummy=${
+          webhookSecret ? webhookSecret.includes("dummy") : "n/a"
+        }. Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to real values.`
+    );
+    return res
+      .status(503)
+      .send("Webhook handler unavailable: Stripe not configured");
+  }
 
   let event;
 
   try {
-    // Verify webhook signature
-    if (webhookSecret.includes("dummy") || !stripe) {
-      // Mock webhook for development
-      console.log(
-        "⚠️ Using mock webhook (dummy secret or Stripe not configured)"
-      );
-      event = req.body;
-    } else {
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    }
+    // Always verify the webhook signature against the raw body (req.body must be
+    // a Buffer here — see express.raw() middleware on this route).
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
     console.error("Webhook signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -712,6 +789,30 @@ export const handleWebhook = async (req, res) => {
             received: true,
             error: "Managed service not found",
           });
+        }
+
+        // C-7: Email binding for managed service payments. If the email on the
+        // managed service record doesn't match the Stripe session, refuse to
+        // unlock — this catches metadata tampering and signature-replay edge cases.
+        const sessionCustomerEmail = (session.customer_email || "")
+          .toLowerCase()
+          .trim();
+        const recordEmail = (managedService.email || "").toLowerCase().trim();
+        if (
+          sessionCustomerEmail &&
+          recordEmail &&
+          sessionCustomerEmail !== recordEmail
+        ) {
+          console.error(
+            `[Webhook] MANAGED SERVICE EMAIL BINDING MISMATCH — refusing unlock. ` +
+              `managedServiceId=${managedService._id}, ` +
+              `record.email=${recordEmail}, ` +
+              `session.customer_email=${sessionCustomerEmail}, ` +
+              `session=${session.id}`
+          );
+          return res
+            .status(200)
+            .json({ received: true, skipped: "email_binding_mismatch" });
         }
 
         const customerEmail = (session.customer_email || managedService.email)
@@ -968,6 +1069,28 @@ export const handleWebhook = async (req, res) => {
           });
         }
 
+        // C-7: Email binding on savings-fee unlock too.
+        const sessionCustomerEmailSF = (session.customer_email || "")
+          .toLowerCase()
+          .trim();
+        const recordEmailSF = (managedService.email || "").toLowerCase().trim();
+        if (
+          sessionCustomerEmailSF &&
+          recordEmailSF &&
+          sessionCustomerEmailSF !== recordEmailSF
+        ) {
+          console.error(
+            `[Webhook] SAVINGS-FEE EMAIL BINDING MISMATCH — refusing unlock. ` +
+              `managedServiceId=${managedService._id}, ` +
+              `record.email=${recordEmailSF}, ` +
+              `session.customer_email=${sessionCustomerEmailSF}, ` +
+              `session=${session.id}`
+          );
+          return res
+            .status(200)
+            .json({ received: true, skipped: "email_binding_mismatch" });
+        }
+
         const customerEmail = (session.customer_email || managedService.email)
           .toLowerCase()
           .trim();
@@ -1031,6 +1154,52 @@ export const handleWebhook = async (req, res) => {
         }
 
         return res.json({ received: true });
+      }
+
+      // C-7: Email binding — for non-extra_credit regular payments tied to a
+      // specific requestId, verify that the buyer-of-record's email matches
+      // the session's customer_email before unlocking. If mismatch, log + skip.
+      // (extra_credit / top-up flows can have requestId="general"; skip the bind.)
+      if (
+        session.metadata?.requestId &&
+        session.metadata.requestId !== "general" &&
+        session.metadata?.planType !== "extra_credit"
+      ) {
+        try {
+          const boundRequest = await BuyerRequest.findById(
+            session.metadata.requestId
+          );
+          if (boundRequest) {
+            const sessionEmail = (session.customer_email || "")
+              .toLowerCase()
+              .trim();
+            const requestEmail = (boundRequest.email || "")
+              .toLowerCase()
+              .trim();
+            if (
+              sessionEmail &&
+              requestEmail &&
+              sessionEmail !== requestEmail
+            ) {
+              console.error(
+                `[Webhook] EMAIL BINDING MISMATCH — refusing to unlock. ` +
+                  `requestId=${session.metadata.requestId}, ` +
+                  `request.email=${requestEmail}, ` +
+                  `session.customer_email=${sessionEmail}, ` +
+                  `session=${session.id}`
+              );
+              return res.status(200).json({
+                received: true,
+                skipped: "email_binding_mismatch",
+              });
+            }
+          }
+        } catch (bindErr) {
+          console.error(
+            `[Webhook] Error during email-binding check:`,
+            bindErr.message
+          );
+        }
       }
 
       // Regular payment (MatchReport) or top-up (extra_credit)

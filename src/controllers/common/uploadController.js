@@ -21,8 +21,8 @@ export const uploadDocument = async (req, res) => {
       data: {
         fileName: originalname,
         type: mimetype,
-        // Path that can be served from the server
-        url: `/uploads/${filename}`,
+        // Path that can be served from the server (Wave 1C: auth-gated route)
+        url: `/api/files/${filename}`,
       },
     });
   } catch (error) {

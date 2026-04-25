@@ -1,5 +1,6 @@
 import express from "express";
 import { authenticateAdmin } from "../../middleware/adminAuth.js";
+import { requireCsrf } from "../../middleware/csrf.js";
 import {
   requireAdmin,
   requireSuperAdmin,
@@ -27,8 +28,11 @@ import { getAllFeedback, updateFeedbackStatus, replyToFeedback } from "../../con
 
 const router = express.Router();
 
-// All admin routes require admin authentication
+// All admin routes require admin authentication.
+// M-6: CSRF double-submit check on every non-safe method. `requireCsrf`
+// is a no-op for GET/HEAD/OPTIONS so listing endpoints remain unaffected.
 router.use(authenticateAdmin);
+router.use(requireCsrf);
 
 // Dashboard stats
 router.get("/stats", requireAdmin, getDashboardStats);

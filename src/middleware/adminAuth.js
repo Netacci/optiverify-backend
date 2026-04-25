@@ -1,8 +1,32 @@
 import jwt from "jsonwebtoken";
 import Admin from "../models/admin/Admin.js";
 
-const JWT_SECRET =
-  process.env.JWT_SECRET || "your-jwt-secret-key-change-in-production";
+// ========== C-2: fail-closed secret resolution ==========
+const KNOWN_DEFAULTS = new Set([
+  "your-jwt-secret-key-change-in-production",
+  "your-secret-key-change-in-production",
+  "change-me",
+  "secret",
+  "jwt-secret",
+]);
+
+function requireSecret(name) {
+  const v = process.env[name];
+  if (!v || v.length < 32 || KNOWN_DEFAULTS.has(v)) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `[SECURITY] ${name} must be set to a strong (>=32 char) non-default secret in production`
+      );
+    }
+    console.warn(
+      `⚠️  [SECURITY] ${name} is missing/weak/default — failing closed in non-production mode is OFF, but DEPLOY WILL FAIL. Set ${name} to a strong random value.`
+    );
+    return v || `dev-only-insecure-${name}-${Date.now()}`;
+  }
+  return v;
+}
+
+const JWT_SECRET = requireSecret("JWT_SECRET");
 
 /**
  * Verify JWT token from cookie for admin
@@ -57,6 +81,16 @@ export const authenticateAdmin = async (req, res, next) => {
       });
     }
 
+    // H-4: Token revocation via tokenVersion
+    const tokenV = typeof decoded.v === "number" ? decoded.v : 0;
+    const adminV = typeof admin.tokenVersion === "number" ? admin.tokenVersion : 0;
+    if (tokenV !== adminV) {
+      return res.status(401).json({
+        success: false,
+        message: "Token revoked",
+      });
+    }
+
     // Attach admin to request
     req.admin = admin;
     req.user = admin; // For compatibility with existing code
@@ -83,9 +117,21 @@ export const authenticateAdmin = async (req, res, next) => {
 
 /**
  * Generate JWT token for admin
+ *
+ * H-4: accepts the full admin object so `tokenVersion` is embedded.
+ * Legacy callers passing a string adminId still work and sign with v=0.
  */
-export const generateAdminToken = (adminId) => {
-  return jwt.sign({ adminId }, JWT_SECRET, {
-    expiresIn: "30d", // 30 days
+export const generateAdminToken = (adminOrId) => {
+  let adminId;
+  let v = 0;
+  if (adminOrId && typeof adminOrId === "object") {
+    adminId = adminOrId._id ? adminOrId._id.toString() : String(adminOrId);
+    v = typeof adminOrId.tokenVersion === "number" ? adminOrId.tokenVersion : 0;
+  } else {
+    adminId = String(adminOrId);
+  }
+  // H-4: reduced lifetime from 30d → 7d
+  return jwt.sign({ adminId, v }, JWT_SECRET, {
+    expiresIn: "7d",
   });
 };
