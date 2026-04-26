@@ -13,8 +13,6 @@ import {
   LOCKOUT_DURATION_MS,
 } from "../../services/passwordPolicy.js";
 
-// H-5: keep the generic-login-error string local to this file — it's only used
-// by the customer login response copy. The admin controller uses its own copy.
 const GENERIC_LOGIN_ERROR = "Invalid credentials";
 
 // Helper to sync payments for a user (blocking)
@@ -739,14 +737,11 @@ export const login = async (req, res) => {
 
     const userEmail = String(email).toLowerCase().trim();
 
-    // Find user. We deliberately do NOT branch the response on user existence —
-    // the not-found path performs a dummy bcrypt compare so timing stays
-    // constant (M-3) and returns the same generic error as wrong-password.
+
     const user = await User.findOne({ email: userEmail });
 
     if (!user) {
-      // M-3: constant-time compare against a fixed dummy hash so attackers
-      // cannot enumerate registered emails by login latency.
+   
       await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
       return res.status(401).json({
         success: false,
@@ -969,16 +964,7 @@ export const resendVerification = async (req, res) => {
       status: "succeeded",
     }).sort({ createdAt: -1 });
 
-    // Check for a buyer request. Important for the regular preview/paywall
-    // funnel where the BuyerRequest is created at form submit but the
-    // Payment record only lands when Stripe's webhook fires. Without this
-    // check, dev environments without `stripe listen` running (and prod
-    // races between checkout-completion and webhook arrival) silently drop
-    // the resend with no diagnostic — the user clicks "resend" and nothing
-    // happens. Including BuyerRequest closes that gap. This does NOT weaken
-    // the M-3 anti-enumeration property: an anonymous attacker probing a
-    // random email still can't tell whether a user *account* exists, only
-    // whether a form was submitted recently with that address.
+
     const buyerRequest = await BuyerRequest.findOne({
       email: userEmail,
     }).sort({ createdAt: -1 });
