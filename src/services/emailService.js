@@ -76,7 +76,7 @@ function renderTransactionalEmail({
                   <tr>
                     <td align="left" valign="middle">
                       <a href="${FRONTEND_URL}" style="text-decoration:none;color:#111827;display:inline-block;">
-                        <img src="${EMAIL_LOGO_URL}" alt="${BRAND_NAME}" width="180" height="60" style="display:block;width:180px;height:60px;max-width:180px;border:0;outline:none;text-decoration:none;">
+                        <img src="${EMAIL_LOGO_URL}" alt="${BRAND_NAME}" width="200" height="50" style="display:block;width:200px;height:50px;max-width:200px;border:0;outline:none;text-decoration:none;">
                       </a>
                     </td>
                   
