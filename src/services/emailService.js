@@ -10,6 +10,130 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3002";
 const CUSTOMER_DASHBOARD_URL =
   process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004";
 
+const BRAND_NAME = process.env.BRAND_NAME || "Optiverifi";
+const BRAND_TAGLINE =
+  process.env.BRAND_TAGLINE || "AI-powered supplier matching";
+const BRAND_PRIMARY = process.env.BRAND_PRIMARY_COLOR || "#2563eb"; // blue-600
+const BRAND_PRIMARY_DARK = process.env.BRAND_PRIMARY_DARK_COLOR || "#1d4ed8"; // blue-700
+const EMAIL_LOGO_URL = process.env.EMAIL_LOGO_URL || `${FRONTEND_URL}/logo.jpg`;
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "support@optiverifi.com";
+
+function renderTransactionalEmail({
+  preheader = "",
+  heading,
+  intro,
+  ctaText,
+  ctaUrl,
+  bodyHtml = "",
+  securityNote = "",
+  footerNote = "",
+}) {
+  const preheaderHtml = preheader
+    ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#ffffff;opacity:0;">${preheader}</div>`
+    : "";
+
+  const ctaButtonHtml =
+    ctaText && ctaUrl
+      ? `
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin: 32px auto;">
+          <tr>
+            <td align="center" style="background-color: ${BRAND_PRIMARY}; border-radius: 8px;">
+              <a href="${ctaUrl}"
+                 style="display: inline-block; padding: 14px 32px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 8px;">
+                ${ctaText}
+              </a>
+            </td>
+          </tr>
+        </table>
+        <p style="font-size: 13px; color: #6b7280; line-height: 1.5; margin: 0 0 8px 0;">
+          Button not working? Copy and paste this link into your browser:
+        </p>
+        <p style="font-size: 13px; color: ${BRAND_PRIMARY}; line-height: 1.5; margin: 0 0 24px 0; word-break: break-all;">
+          <a href="${ctaUrl}" style="color: ${BRAND_PRIMARY}; text-decoration: underline;">${ctaUrl}</a>
+        </p>
+      `
+      : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <title>${heading}</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#111827;">
+    ${preheaderHtml}
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f3f4f6;">
+      <tr>
+        <td align="center" style="padding: 32px 16px;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width:600px;width:100%;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+            <!-- Header -->
+            <tr>
+              <td style="padding: 28px 40px; background-color: #ffffff; border-bottom: 1px solid #e5e7eb;">
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                  <tr>
+                    <td align="left" valign="middle">
+                      <a href="${FRONTEND_URL}" style="text-decoration:none;color:#111827;display:inline-block;">
+                        <img src="${EMAIL_LOGO_URL}" alt="${BRAND_NAME}" width="40" height="40" style="display:inline-block;vertical-align:middle;border-radius:8px;border:0;outline:none;text-decoration:none;">
+                        <span style="font-size:20px;font-weight:700;letter-spacing:-0.01em;vertical-align:middle;margin-left:10px;color:#111827;">${BRAND_NAME}</span>
+                      </a>
+                    </td>
+                    <td align="right" valign="middle" style="font-size:12px;color:#6b7280;">
+                      ${BRAND_TAGLINE}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Body -->
+            <tr>
+              <td style="padding: 40px;">
+                <h1 style="margin:0 0 16px 0;font-size:24px;font-weight:700;color:#111827;line-height:1.3;">
+                  ${heading}
+                </h1>
+                <p style="margin: 0 0 16px 0; font-size: 16px; line-height: 1.6; color: #374151;">
+                  ${intro}
+                </p>
+                ${bodyHtml}
+                ${ctaButtonHtml}
+                ${
+                  securityNote
+                    ? `
+                  <div style="margin: 24px 0 0 0; padding: 16px; background-color: #f9fafb; border-left: 3px solid ${BRAND_PRIMARY}; border-radius: 4px;">
+                    <p style="margin: 0; font-size: 13px; line-height: 1.6; color: #4b5563;">
+                      <strong style="color:#111827;">Heads up:</strong> ${securityNote}
+                    </p>
+                  </div>`
+                    : ""
+                }
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td style="padding: 24px 40px 32px 40px; background-color: #f9fafb; border-top: 1px solid #e5e7eb;">
+                ${
+                  footerNote
+                    ? `<p style="margin:0 0 12px 0;font-size:12px;color:#6b7280;line-height:1.5;">${footerNote}</p>`
+                    : ""
+                }
+                <p style="margin: 0; font-size: 12px; color: #9ca3af; line-height: 1.5;">
+                  © ${new Date().getFullYear()} ${BRAND_NAME}. All rights reserved.<br>
+                  Need help? Email us at <a href="mailto:${SUPPORT_EMAIL}" style="color:${BRAND_PRIMARY};text-decoration:none;">${SUPPORT_EMAIL}</a>.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
 /**
  * C-4: HTML-escape any user-controlled string before interpolating into HTML.
  * Use this for every field originating from external input (contact form,
@@ -48,61 +172,32 @@ export const sendPaymentConfirmationEmail = async ({
       annual: "Annual Plan",
     };
 
+    const planLabel = planNames[planType] || "Match Report";
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: `Your Supplier Match Report is Ready - ${
-        planNames[planType] || "Match Report"
-      }`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Your Match Report is Ready</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Your Match Report is Ready!</h1>
-            </div>
-            
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                Thank you for your purchase! Your supplier match report has been generated and is ready to view.
-              </p>
-              
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #667eea;">
-                <p style="margin: 0; font-size: 14px; color: #6b7280;">
-                  <strong>Plan:</strong> ${planNames[planType] || planType}<br>
-                  <strong>Request ID:</strong> ${requestId}
+      subject: `Your supplier match report is ready (${planLabel})`,
+      html: renderTransactionalEmail({
+        preheader:
+          "Your supplier match report has been generated and is ready to view.",
+        heading: "Your match report is ready",
+        intro: `Thanks for your purchase. We've generated your supplier match report and it's ready to view.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border-radius:8px;border-left:3px solid ${BRAND_PRIMARY};margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">
+                  <strong style="color:#111827;">Plan:</strong> ${planLabel}<br>
+                  <strong style="color:#111827;">Request ID:</strong> ${requestId}
                 </p>
-              </div>
-              
-              <div style="text-align: center; margin: 40px 0;">
-                <a href="${reportUrl}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                  View Full Report
-                </a>
-              </div>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>Important:</strong> This link is secure and will expire in 30 days. Keep it safe - you'll need it to access your report.
-              </p>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 20px;">
-                If you didn't make this request, please ignore this email.
-              </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+        `,
+        ctaText: "View full report",
+        ctaUrl: reportUrl,
+        securityNote: `This link is private to you and will expire in 30 days. Don't share it with others. If you didn't make this purchase, please ignore this email.`,
+      }),
     });
 
     if (error) {
@@ -136,50 +231,25 @@ export const sendVerificationEmail = async ({
       from: FROM_EMAIL,
       to: email,
       subject: isNewRequest
-        ? "Verify Your Email to Access Your Match Report"
-        : "Verify Your Email to Continue",
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Verify Your Email</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Verify Your Email</h1>
-            </div>
-            
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                ${
-                  isNewRequest
-                    ? "We received your payment. Please verify your email to access your match report."
-                    : "Please verify your email address to continue with your request."
-                }
-              </p>
-              
-              <div style="text-align: center; margin: 40px 0;">
-                <a href="${verifyUrl}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                  Verify Email Address
-                </a>
-              </div>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>Security Note:</strong> This verification link will expire in 24 hours. If you didn't request this, please ignore this email.
-              </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+        ? `Verify your email to access your ${BRAND_NAME} match report`
+        : `Verify your email to continue with ${BRAND_NAME}`,
+      html: renderTransactionalEmail({
+        preheader: isNewRequest
+          ? "Click the button to verify your email and unlock your match report."
+          : "Click the button to verify your email and continue.",
+        heading: isNewRequest
+          ? "Verify your email to view your match report"
+          : "Verify your email",
+        intro: isNewRequest
+          ? `Thanks for your purchase. To access your supplier match report and finish setting up your account, verify your email below. It only takes one click.`
+          : `Click the button below to verify your email address and continue with your request.`,
+        ctaText: "Verify email address",
+        ctaUrl: verifyUrl,
+        securityNote: `This link expires in 24 hours and can only be used once. If you didn't request this, you can safely ignore this email.`,
+        footerNote: `You're receiving this email because someone (hopefully you) asked to verify <strong style="color:#111827;">${escapeHtml(
+          email,
+        )}</strong> on ${BRAND_NAME}.`,
+      }),
     });
 
     if (error) {
@@ -213,60 +283,35 @@ export const sendSubscriptionSetupEmail = async ({
       annual: "Annual Plan",
     };
 
+    const planLabel = planNames[planType] || "Subscription";
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: `Set Up Your SupplierMatchAI Account - ${
-        planNames[planType] || "Subscription"
-      }`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Set Up Your Account</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to SupplierMatchAI!</h1>
-            </div>
-            
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                Thank you for subscribing! You now have access to unlimited supplier matches.
-              </p>
-              
-              <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #0ea5e9;">
-                <p style="margin: 0; font-size: 14px; color: #0c4a6e;">
-                  <strong>What you get:</strong><br>
-                  • Unlimited match requests<br>
-                  • Access to all match reports<br>
-                  • Priority support<br>
-                  • Dashboard to manage all your requests
+      subject: `Set up your ${BRAND_NAME} account (${planLabel})`,
+      html: renderTransactionalEmail({
+        preheader:
+          "You now have access to unlimited supplier matches. Set up your account to get started.",
+        heading: `Welcome to ${BRAND_NAME}`,
+        intro: `Thanks for subscribing. You now have access to unlimited supplier matches.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f0f9ff;border-radius:8px;border-left:3px solid #0ea5e9;margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;">What's included:</p>
+                <p style="margin: 0; font-size: 14px; line-height: 1.8; color: #0c4a6e;">
+                  &bull; Unlimited match requests<br>
+                  &bull; Access to all match reports<br>
+                  &bull; Priority support<br>
+                  &bull; A dashboard to manage every request
                 </p>
-              </div>
-              
-              <div style="text-align: center; margin: 40px 0;">
-                <a href="${setupUrl}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                  Set Up Your Account
-                </a>
-              </div>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>Optional:</strong> Setting up an account gives you easy access to all your reports and lets you make new requests from your dashboard. You can skip this and continue using email verification links.
-              </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+        `,
+        ctaText: "Set up your account",
+        ctaUrl: setupUrl,
+        securityNote: `Setting up an account is optional. It gives you a dashboard with every report and request in one place. If you'd rather not, you can keep using the verification link in each email.`,
+      }),
     });
 
     if (error) {
@@ -304,69 +349,39 @@ export const sendPaymentAndVerificationEmail = async ({
       free: "Free Plan",
     };
 
+    const planLabel = planNames[planType] || planType;
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: `Payment Confirmed - Verify Your Account to Access Your Matches`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Payment Confirmed - Verify Your Account</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Payment Confirmed!</h1>
-            </div>
-            
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                Thank you for your purchase! Your payment has been confirmed and your supplier match report is ready.
-              </p>
-              
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #667eea;">
-                <p style="margin: 0; font-size: 14px; color: #6b7280;">
-                  <strong>Plan:</strong> ${planNames[planType] || planType}<br>
-                  <strong>Request ID:</strong> ${requestId}
+      subject: `Payment confirmed. Verify your account to access your matches`,
+      html: renderTransactionalEmail({
+        preheader:
+          "Your payment is confirmed. Verify your email to access your supplier matches.",
+        heading: "Payment confirmed",
+        intro: `Thanks for your purchase. Your payment has been confirmed and your supplier match report is ready.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border-radius:8px;border-left:3px solid ${BRAND_PRIMARY};margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">
+                  <strong style="color:#111827;">Plan:</strong> ${planLabel}<br>
+                  <strong style="color:#111827;">Request ID:</strong> ${requestId}
                 </p>
-              </div>
-              
-              <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #0ea5e9;">
-                <p style="margin: 0; font-size: 14px; color: #0c4a6e;">
-                  <strong>Next Step:</strong> Verify your email and create your account to access your matches in your dashboard.
-                </p>
-              </div>
-              
-              <div style="text-align: center; margin: 40px 0;">
-                <a href="${verifyUrl}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                  Verify Email & Create Account
-                </a>
-              </div>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>What happens next:</strong><br>
-                1. Click the button above to verify your email<br>
-                2. Create a password for your account<br>
-                3. Log in to your dashboard<br>
-                4. View all your supplier matches
-              </p>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 20px;">
-                <strong>Security Note:</strong> This verification link will expire in 24 hours. If you didn't make this request, please ignore this email.
-              </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+          <p style="margin: 16px 0 8px 0; font-size: 14px; font-weight: 600; color: #111827;">What happens next</p>
+          <ol style="margin: 0 0 8px 0; padding-left: 20px; font-size: 14px; line-height: 1.7; color: #4b5563;">
+            <li>Click the button below to verify your email.</li>
+            <li>Create a password for your account.</li>
+            <li>Log in to your dashboard.</li>
+            <li>View all your supplier matches.</li>
+          </ol>
+        `,
+        ctaText: "Verify email and create account",
+        ctaUrl: verifyUrl,
+        securityNote: `This verification link expires in 24 hours and can only be used once. If you didn't make this purchase, please ignore this email.`,
+      }),
     });
 
     if (error) {
@@ -417,11 +432,12 @@ export const sendTestEmail = async (email) => {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: "Test Email from SupplierMatchAI",
-      html: `
-        <h1>Test Email</h1>
-        <p>If you're seeing this, Resend is working correctly!</p>
-      `,
+      subject: `Test email from ${BRAND_NAME}`,
+      html: renderTransactionalEmail({
+        preheader: `Test email from ${BRAND_NAME}.`,
+        heading: "Test email",
+        intro: `If you're seeing this, Resend is configured correctly and emails from ${BRAND_NAME} can reach this address.`,
+      }),
     });
 
     if (error) {
@@ -448,50 +464,15 @@ export const sendPasswordResetEmail = async ({ email, resetToken }) => {
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: "Reset Your Password - SupplierMatchAI",
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Reset Your Password</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Reset Your Password</h1>
-            </div>
-            
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                We received a request to reset your password. Click the button below to create a new password.
-              </p>
-              
-              <div style="text-align: center; margin: 40px 0;">
-                <a href="${resetUrl}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                  Reset Password
-                </a>
-              </div>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>Important:</strong> This link will expire in 1 hour for security reasons. If you didn't request a password reset, please ignore this email.
-              </p>
-              
-              <p style="font-size: 14px; color: #6b7280; margin-top: 20px;">
-                If the button doesn't work, copy and paste this link into your browser:<br>
-                <a href="${resetUrl}" style="color: #667eea; word-break: break-all;">${resetUrl}</a>
-              </p>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+      subject: `Reset your ${BRAND_NAME} password`,
+      html: renderTransactionalEmail({
+        preheader: "Click the button to choose a new password.",
+        heading: "Reset your password",
+        intro: `We received a request to reset the password on your ${BRAND_NAME} account. Click the button below to choose a new one.`,
+        ctaText: "Reset password",
+        ctaUrl: resetUrl,
+        securityNote: `This link expires in 1 hour and can only be used once. If you didn't ask to reset your password, you can safely ignore this email and your current password will keep working.`,
+      }),
     });
 
     if (error) {
@@ -523,7 +504,7 @@ export const sendManagedServiceReceiptEmail = async ({
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  // C-4: itemName and category are user-supplied; escape before HTML interpolation.
+ 
   const safeItemName = escapeHtml(itemName);
   const safeCategory = escapeHtml(category);
   const safeTransactionId = escapeHtml(transactionId);
@@ -531,64 +512,41 @@ export const sendManagedServiceReceiptEmail = async ({
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: `Payment Receipt - Managed Service Request #${requestId.slice(-8)}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Payment Receipt</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">Payment Confirmed!</h1>
-            </div>
-
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">
-                Thank you for your payment! Your managed service request has been received and your sourcing team is reviewing it.
-              </p>
-
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #667eea;">
-                <p style="margin: 0 0 15px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Receipt Details:</strong>
+      subject: `Payment receipt: managed service request #${requestId.slice(-8)}`,
+      html: renderTransactionalEmail({
+        preheader: `Receipt for $${formattedAmount} on managed service request #${requestId.slice(-8)}.`,
+        heading: "Payment confirmed",
+        intro: `Thanks for your payment. Your managed service request has been received and our sourcing team is reviewing it.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border-radius:8px;border-left:3px solid ${BRAND_PRIMARY};margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #111827;">Receipt details</p>
+                <p style="margin: 0; font-size: 14px; line-height: 1.8; color: #4b5563;">
+                  <strong style="color:#111827;">Transaction ID:</strong> ${safeTransactionId || requestId.slice(-8)}<br>
+                  <strong style="color:#111827;">Item:</strong> ${safeItemName}<br>
+                  ${category ? `<strong style="color:#111827;">Category:</strong> ${safeCategory}<br>` : ""}
+                  <strong style="color:#111827;">Reference:</strong> #${requestId.slice(-8)}<br>
+                  <strong style="color:#111827;">Amount:</strong> $${formattedAmount}
                 </p>
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Transaction ID:</strong> ${safeTransactionId || requestId.slice(-8)}
-                </p>
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Item:</strong> ${safeItemName}
-                </p>
-                ${category ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;"><strong>Category:</strong> ${safeCategory}</p>` : ""}
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong>Reference:</strong> #${requestId.slice(-8)}
-                </p>
-                <p style="margin: 0; font-size: 14px; color: #374151;">
-                  <strong>Amount:</strong> $${formattedAmount}
-                </p>
-              </div>
-
-              <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 30px 0; border-left: 4px solid #0ea5e9;">
-                <p style="margin: 0; font-size: 14px; color: #0c4a6e;">
-                  <strong>What's Next?</strong><br>
+              </td>
+            </tr>
+          </table>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f0f9ff;border-radius:8px;border-left:3px solid #0ea5e9;margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;">What happens next</p>
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #0c4a6e;">
                   Our sourcing team will review your request and begin matching it with qualified suppliers. You'll receive updates via email as progress is made.
                 </p>
-              </div>
-
-              <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
-                <strong>Log in to your dashboard</strong> to track the status of your request and view supplier matches as they become available.
-              </p>
-            </div>
-
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} SupplierMatchAI. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+          <p style="margin: 16px 0 0 0; font-size: 14px; line-height: 1.6; color: #4b5563;">
+            Log in to your dashboard to track the status of your request and see supplier matches as they become available.
+          </p>
+        `,
+      }),
     });
 
     if (error) {
@@ -649,88 +607,63 @@ export const sendMatchPaymentReceiptEmail = async ({
     extra_credit: "Credit Top-Up",
   };
 
-  // C-4: escape user-controlled fields before HTML interpolation.
+
   const safeMRItemName = escapeHtml(itemName);
   const safeMRCategory = escapeHtml(category);
   const safeMRTransactionId = escapeHtml(transactionId);
   const safeMRPlanLabel = escapeHtml(planLabels[planType] || planType || "");
 
   try {
+    const detailRows = [
+      `<tr><td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 45%;">Transaction ID</td><td style="padding: 8px 0; font-size: 14px; color: #111827; font-family: monospace;">${safeMRTransactionId}</td></tr>`,
+      `<tr style="border-top: 1px solid #e5e7eb;"><td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Payment date</td><td style="padding: 8px 0; font-size: 14px; color: #111827;">${formattedDate}</td></tr>`,
+      itemName
+        ? `<tr style="border-top: 1px solid #e5e7eb;"><td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Item searched</td><td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRItemName}</td></tr>`
+        : "",
+      category
+        ? `<tr style="border-top: 1px solid #e5e7eb;"><td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Category</td><td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRCategory}</td></tr>`
+        : "",
+      planType
+        ? `<tr style="border-top: 1px solid #e5e7eb;"><td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Plan</td><td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRPlanLabel}</td></tr>`
+        : "",
+      `<tr style="border-top: 1px solid #e5e7eb;"><td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Amount paid</td><td style="padding: 8px 0; font-size: 16px; font-weight: 700; color: #111827;">${formattedAmount}</td></tr>`,
+    ]
+      .filter(Boolean)
+      .join("");
+
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to: email,
-      subject: `Payment Receipt - Optiverifi Match Request`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Payment Receipt</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0 0 6px 0; font-size: 26px;">Payment Receipt</h1>
-              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Optiverifi</p>
-            </div>
-
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <p style="font-size: 16px; margin-bottom: 24px; color: #374151;">
-                Thank you for your payment. Here is your receipt for the supplier match request.
-              </p>
-
-              <div style="background: #f9fafb; padding: 24px; border-radius: 8px; margin: 0 0 24px 0; border: 1px solid #e5e7eb;">
-                <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Receipt Details</h2>
-                <table style="width: 100%; border-collapse: collapse;">
-                  <tr>
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 45%;">Transaction ID</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827; font-family: monospace;">${safeMRTransactionId}</td>
-                  </tr>
-                  <tr style="border-top: 1px solid #e5e7eb;">
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Payment Date</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${formattedDate}</td>
-                  </tr>
-                  ${itemName ? `
-                  <tr style="border-top: 1px solid #e5e7eb;">
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Item Searched</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRItemName}</td>
-                  </tr>` : ""}
-                  ${category ? `
-                  <tr style="border-top: 1px solid #e5e7eb;">
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Category</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRCategory}</td>
-                  </tr>` : ""}
-                  ${planType ? `
-                  <tr style="border-top: 1px solid #e5e7eb;">
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Plan</td>
-                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeMRPlanLabel}</td>
-                  </tr>` : ""}
-                  <tr style="border-top: 1px solid #e5e7eb;">
-                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Amount Paid</td>
-                    <td style="padding: 8px 0; font-size: 16px; font-weight: 700; color: #111827;">${formattedAmount}</td>
-                  </tr>
+      subject: `Payment receipt: ${BRAND_NAME} match request`,
+      html: renderTransactionalEmail({
+        preheader: `Receipt for ${formattedAmount} on your ${BRAND_NAME} match request.`,
+        heading: "Payment receipt",
+        intro: `Thanks for your payment. Here is your receipt for the supplier match request.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 24px 0;">
+            <tr>
+              <td style="padding: 20px 24px;">
+                <p style="margin: 0 0 12px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Receipt details</p>
+                <table style="width:100%;border-collapse:collapse;">
+                  ${detailRows}
                 </table>
-              </div>
-
-              <div style="background: #ecfdf5; padding: 16px 20px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 24px;">
+              </td>
+            </tr>
+          </table>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#ecfdf5;border-radius:8px;border-left:3px solid #10b981;margin: 24px 0;">
+            <tr>
+              <td style="padding: 14px 20px;">
                 <p style="margin: 0; font-size: 14px; color: #065f46;">
-                  <strong>Payment received</strong> — your supplier match request is being processed.
+                  <strong style="color:#064e3b;">Payment received.</strong> Your supplier match request is being processed.
                 </p>
-              </div>
-
-              <p style="font-size: 13px; color: #9ca3af; margin-top: 20px;">
-                Please keep this email for your records. If you have any questions, contact us at support@optiverifi.com.
-              </p>
-            </div>
-
-            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af; margin: 0;">
-                © ${new Date().getFullYear()} Optiverifi. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+          <p style="margin: 16px 0 0 0; font-size: 13px; color: #6b7280; line-height: 1.5;">
+            Please keep this email for your records.
+          </p>
+        `,
+      }),
     });
 
     if (error) {
@@ -749,7 +682,10 @@ export const sendMatchPaymentReceiptEmail = async ({
 /**
  * Internal notification to sourcing@optiverifi.com when a managed service payment is received
  */
-export const sendInternalSourcingNotification = async (managedService, userEmail) => {
+export const sendInternalSourcingNotification = async (
+  managedService,
+  userEmail,
+) => {
   const deadline = managedService.internalDeadline
     ? new Date(managedService.internalDeadline).toLocaleDateString("en-US", {
         year: "numeric",
@@ -782,7 +718,7 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
          </tr>`
       : "";
 
-  // C-4: Escape every user-controlled managedService field before HTML interpolation.
+
   const safeMS = {
     itemName: escapeHtml(managedService.itemName),
     category: escapeHtml(managedService.category),
@@ -804,60 +740,61 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
       from: FROM_EMAIL,
       to: "sourcing@optiverifi.com",
       // Note: subject is plain text, not HTML; use raw values here.
-      subject: `New Managed Sourcing Request — ${managedService.itemName} (${managedService.category})`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0 0 6px 0; font-size: 24px;">New Sourcing Request</h1>
-              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Payment confirmed — action required</p>
-            </div>
-
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <div style="background: #ecfdf5; padding: 14px 18px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 28px;">
+      subject: `New managed sourcing request: ${managedService.itemName} (${managedService.category})`,
+      html: renderTransactionalEmail({
+        preheader: `New managed sourcing request received. Payment confirmed.`,
+        heading: "New sourcing request",
+        intro: `A new managed sourcing request has come in. Payment is confirmed and it's now in your queue.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#ecfdf5;border-radius:8px;border-left:3px solid #10b981;margin: 24px 0;">
+            <tr>
+              <td style="padding: 14px 20px;">
                 <p style="margin: 0; font-size: 14px; color: #065f46;">
-                  <strong>$199 service fee received on ${paidAt}.</strong> This request is now in your queue.
+                  <strong style="color:#064e3b;">$199 service fee received on ${paidAt}.</strong> This request is now in your queue.
                 </p>
-              </div>
+              </td>
+            </tr>
+          </table>
 
-              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</h2>
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
-                <table style="width: 100%; border-collapse: collapse;">
+          <p style="margin: 24px 0 12px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <table style="width:100%;border-collapse:collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
                     <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeUserEmail || safeMS.email}</td>
                   </tr>
                   ${row("Request ID", managedService._id?.toString())}
                 </table>
-              </div>
+              </td>
+            </tr>
+          </table>
 
-              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</h2>
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
-                <table style="width: 100%; border-collapse: collapse;">
+          <p style="margin: 24px 0 12px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request details</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <table style="width:100%;border-collapse:collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
                     <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${safeMS.itemName}</td>
                   </tr>
                   ${row("Category", categoryDisplay)}
                   ${row("Quantity", safeMS.quantity)}
-                  ${row("Budget Range", safeMS.estimatedSpendRange)}
-                  ${row("Delivery Location", safeMS.deliveryLocation)}
+                  ${row("Budget range", safeMS.estimatedSpendRange)}
+                  ${row("Delivery location", safeMS.deliveryLocation)}
                   ${row("Deadline", deadline)}
                   ${row("Urgency", safeMS.urgency)}
-                  ${row("Compliance Level", safeMS.complianceLevel)}
+                  ${row("Compliance level", safeMS.complianceLevel)}
                   ${managedService.description ? row("Description", escapeHtml(managedService.description)) : ""}
                 </table>
-              </div>
-            </div>
-
-            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af; margin: 0;">© ${new Date().getFullYear()} Optiverifi — Internal Notification</p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+        `,
+        footerNote: `Internal notification. Sent to sourcing@optiverifi.com.`,
+      }),
     });
 
     if (error) {
@@ -865,7 +802,9 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
       throw error;
     }
 
-    console.log(`✅ Internal sourcing notification sent to sourcing@optiverifi.com for request ${managedService._id}`);
+    console.log(
+      `✅ Internal sourcing notification sent to sourcing@optiverifi.com for request ${managedService._id}`,
+    );
     return { success: true, data };
   } catch (error) {
     console.error("Error sending internal sourcing notification:", error);
@@ -876,7 +815,11 @@ export const sendInternalSourcingNotification = async (managedService, userEmail
 /**
  * Internal notification to info@optiverifi.com when a match request payment is received
  */
-export const sendInternalMatchNotification = async (buyerRequest, userEmail, planType) => {
+export const sendInternalMatchNotification = async (
+  buyerRequest,
+  userEmail,
+  planType,
+) => {
   const planLabels = {
     "one-time": "One-Time Match",
     starter_monthly: "Starter Plan (Monthly)",
@@ -894,7 +837,7 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
          </tr>`
       : "";
 
-  // C-4: Escape every user-controlled buyerRequest field before HTML interpolation.
+ 
   const safeBR = {
     name: escapeHtml(buyerRequest.name),
     category: escapeHtml(buyerRequest.category),
@@ -922,59 +865,60 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
       from: FROM_EMAIL,
       to: "info@optiverifi.com",
       // Note: subject is plain text, not HTML; raw values are fine here.
-      subject: `New Match Request Payment — ${buyerRequest.name} (${buyerRequest.category})`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0 0 6px 0; font-size: 24px;">New Match Request</h1>
-              <p style="color: #d1d5db; margin: 0; font-size: 14px;">Payment confirmed</p>
-            </div>
-
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <div style="background: #ecfdf5; padding: 14px 18px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 28px;">
+      subject: `New match request payment: ${buyerRequest.name} (${buyerRequest.category})`,
+      html: renderTransactionalEmail({
+        preheader: `New match request payment received.`,
+        heading: "New match request",
+        intro: `A new match request payment has been received and the buyer is now waiting on their report.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#ecfdf5;border-radius:8px;border-left:3px solid #10b981;margin: 24px 0;">
+            <tr>
+              <td style="padding: 14px 20px;">
                 <p style="margin: 0; font-size: 14px; color: #065f46;">
-                  <strong>Payment received</strong> for a ${safePlanLabel || "match"} plan.
+                  <strong style="color:#064e3b;">Payment received</strong> for a ${safePlanLabel || "match"} plan.
                 </p>
-              </div>
+              </td>
+            </tr>
+          </table>
 
-              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</h2>
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
-                <table style="width: 100%; border-collapse: collapse;">
+          <p style="margin: 24px 0 12px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Customer</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <table style="width:100%;border-collapse:collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Email</td>
                     <td style="padding: 8px 0; font-size: 14px; color: #111827;">${safeUserEmailMatch || safeBR.email}</td>
                   </tr>
                   ${row("Plan", safePlanLabel)}
                 </table>
-              </div>
+              </td>
+            </tr>
+          </table>
 
-              <h2 style="margin: 0 0 16px 0; font-size: 15px; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request Details</h2>
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 28px; border: 1px solid #e5e7eb;">
-                <table style="width: 100%; border-collapse: collapse;">
+          <p style="margin: 24px 0 12px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Request details</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <table style="width:100%;border-collapse:collapse;">
                   <tr>
                     <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">Item</td>
                     <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #111827;">${safeBR.name}</td>
                   </tr>
                   ${row("Category", brCategoryDisplay)}
                   ${row("Quantity", safeBR.quantity)}
-                  ${row("Unit Price", safeUnitPrice)}
-                  ${row("Timeline / Deadline", safeBR.timeline)}
-                  ${row("Delivery Location", safeBR.location)}
+                  ${row("Unit price", safeUnitPrice)}
+                  ${row("Timeline / deadline", safeBR.timeline)}
+                  ${row("Delivery location", safeBR.location)}
                   ${row("Requirements", safeBR.requirements)}
                   ${buyerRequest.description ? row("Description", escapeHtml(buyerRequest.description)) : ""}
                 </table>
-              </div>
-            </div>
-
-            <div style="text-align: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af; margin: 0;">© ${new Date().getFullYear()} Optiverifi — Internal Notification</p>
-            </div>
-          </body>
-        </html>
-      `,
+              </td>
+            </tr>
+          </table>
+        `,
+        footerNote: `Internal notification. Sent to info@optiverifi.com.`,
+      }),
     });
 
     if (error) {
@@ -982,7 +926,9 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
       throw error;
     }
 
-    console.log(`✅ Internal match notification sent to info@optiverifi.com for request ${buyerRequest._id}`);
+    console.log(
+      `✅ Internal match notification sent to info@optiverifi.com for request ${buyerRequest._id}`,
+    );
     return { success: true, data };
   } catch (error) {
     console.error("Error sending internal match notification:", error);
@@ -993,7 +939,7 @@ export const sendInternalMatchNotification = async (buyerRequest, userEmail, pla
 /**
  * Send contact form email to support
  *
- * C-4: All user-controlled fields (name, email, company, role, message) MUST be
+ * All user-controlled fields (name, email, company, role, message) MUST be
  * HTML-escaped via escapeHtml() before being interpolated into the body.
  * The contact form is unauthenticated, so any unescaped interpolation here is a
  * stored-phishing vector aimed at internal staff. Also caps message length to
@@ -1016,7 +962,7 @@ export const sendContactEmail = async ({
       other: "Other",
     };
 
-    // C-4: bound message length, then escape every field that flows into HTML.
+
     const MESSAGE_CAP = 5000;
     const rawMessage = String(message ?? "");
     const cappedMessage =
@@ -1035,61 +981,50 @@ export const sendContactEmail = async ({
       from: FROM_EMAIL,
       to: supportEmail,
       replyTo: email,
-      subject: `Contact Form Submission from ${safeName}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Contact Form Submission</title>
-          </head>
-          <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-              <h1 style="color: white; margin: 0; font-size: 28px;">New Contact Form Submission</h1>
-            </div>
-
-            <div style="background: #ffffff; padding: 40px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-              <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Name:</strong> ${safeName}
+      subject: `Contact form submission from ${safeName}`,
+      html: renderTransactionalEmail({
+        preheader: `New contact form submission from ${safeName}.`,
+        heading: "New contact form submission",
+        intro: `Someone submitted the contact form. Reply to this email to respond directly.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #4b5563;">
+                  <strong style="color:#111827;">Name:</strong> ${safeName}
                 </p>
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Email:</strong> <a href="mailto:${safeEmail}" style="color: #667eea;">${safeEmail}</a>
+                <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #4b5563;">
+                  <strong style="color:#111827;">Email:</strong> <a href="mailto:${safeEmail}" style="color: ${BRAND_PRIMARY}; text-decoration: none;">${safeEmail}</a>
                 </p>
                 ${
                   company
-                    ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Company:</strong> ${safeCompany}
+                    ? `<p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #4b5563;">
+                  <strong style="color:#111827;">Company:</strong> ${safeCompany}
                 </p>`
                     : ""
                 }
                 ${
                   role
-                    ? `<p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">
-                  <strong style="color: #374151;">Role:</strong> ${safeRoleLabel || safeRole}
+                    ? `<p style="margin: 0; font-size: 14px; line-height: 1.7; color: #4b5563;">
+                  <strong style="color:#111827;">Role:</strong> ${safeRoleLabel || safeRole}
                 </p>`
                     : ""
                 }
-              </div>
+              </td>
+            </tr>
+          </table>
 
-              <div style="margin-top: 30px;">
-                <h2 style="font-size: 18px; color: #374151; margin-bottom: 15px;">Message:</h2>
-                <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
-                  <p style="margin: 0; font-size: 14px; color: #374151; white-space: pre-wrap;">${safeMessage}</p>
-                </div>
-              </div>
-
-            </div>
-
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="font-size: 12px; color: #9ca3af;">
-                © ${new Date().getFullYear()} Optiverifi. All rights reserved.
-              </p>
-            </div>
-          </body>
-        </html>
-      `,
+          <p style="margin: 24px 0 8px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Message</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border-radius:8px;border-left:3px solid ${BRAND_PRIMARY};margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0; font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-wrap;">${safeMessage}</p>
+              </td>
+            </tr>
+          </table>
+        `,
+        footerNote: `Internal notification. Reply directly to respond to the sender.`,
+      }),
     });
 
     if (error) {

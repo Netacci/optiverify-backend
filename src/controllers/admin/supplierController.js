@@ -211,19 +211,22 @@ const generateSupplierNumber = async () => {
 export const getSuppliers = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const requestedLimit = parseInt(req.query.limit) || 20;
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
     const skip = (page - 1) * limit;
 
-    const { category, search, isActive } = req.query;
+    const { category, search, isActive, stateRegion } = req.query;
     const query = {};
 
     if (category) query.category = category;
+    if (stateRegion) query.stateRegion = stateRegion;
     if (isActive !== undefined) query.isActive = isActive === "true";
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: "i" } },
         { category: { $regex: search, $options: "i" } },
         { supplierNumber: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
       ];
     }
 

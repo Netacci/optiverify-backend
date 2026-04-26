@@ -4,7 +4,8 @@ import MatchReport from "../../models/customer/MatchReport.js";
 import {
   passesHardFilter,
   calculatePreviewScore,
-  calculateHybridScore,
+  // calculateHybridScore — DISABLED. Single rule-based score (calculatePreviewScore)
+  // is now used everywhere so preview and post-payment match numbers always agree.
   generateWhyTheyMatch,
   generateRequestSummary,
   generateTemplateExplanation,
@@ -213,17 +214,24 @@ export const processMatching = async (req, res) => {
 
     if (process.env.NODE_ENV === "development") {
       console.log(`\n${"─".repeat(60)}`);
-      console.log(`[HYBRID SCORING] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${reqSubCategory ? ` > ${reqSubCategory}` : ""}`);
-      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (OpenAI AI + rule-based)`);
+      console.log(`[FULL MATCH] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${reqSubCategory ? ` > ${reqSubCategory}` : ""}`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (rule-based score + AI prose)`);
       console.log(`─────────────────────────────────────────────────────────`);
     }
 
-    const suppliersWithScores = await Promise.all(
-      filteredSuppliers.map(async (supplier) => {
-        const result = await calculateHybridScore(buyerRequest, supplier);
-        return { supplier, matchScore: result.score, factors: result.factors };
-      })
-    );
+    // Score everyone with the unified rule-based scorer. AI is no longer used
+    // to compute the number — only to write the explanations below.
+    const suppliersWithScores = filteredSuppliers.map((supplier) => {
+      const result = calculatePreviewScore(buyerRequest, supplier);
+      return { supplier, matchScore: result.score, factors: result.factors };
+    });
+
+    // Previously: const suppliersWithScores = await Promise.all(
+    //   filteredSuppliers.map(async (supplier) => {
+    //     const result = await calculateHybridScore(buyerRequest, supplier);
+    //     return { supplier, matchScore: result.score, factors: result.factors };
+    //   })
+    // );
 
     suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
     const topSuppliers = suppliersWithScores.slice(0, 5);
@@ -235,7 +243,7 @@ export const processMatching = async (req, res) => {
 
     if (process.env.NODE_ENV === "development") {
       console.log(`─────────────────────────────────────────────────────────`);
-      console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+      console.log(`[FULL MATCH RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
       topSuppliers.forEach((s, i) =>
         console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
       );
@@ -292,7 +300,7 @@ export const processMatching = async (req, res) => {
     await buyerRequest.save();
 
     if (process.env.NODE_ENV === "development") {
-      console.log(`✅ Hybrid match report generated with ${topSuppliers.length} suppliers`);
+      console.log(`✅ Match report generated with ${topSuppliers.length} suppliers (rule-based score + AI prose)`);
     }
 
     res.json({
@@ -408,41 +416,55 @@ export const getPreview = async (req, res) => {
       requestId: id,
     }).populate("fullReport.suppliers.supplierId");
 
-    // Calculate category fit and capability fit
-    let categoryFit = "N/A";
-    let capabilityFit = "N/A";
+    // Per-supplier categoryFit / capabilityFit derivation. Hoisted into a
+    // helper so we can build a card for each of the top-N preview suppliers.
+    const buildFits = (supplier) => {
+      let categoryFit = "N/A";
+      let capabilityFit = "N/A";
+      if (!supplier || !buyerRequest) return { categoryFit, capabilityFit };
 
-    if (matchReportWithSuppliers?.fullReport?.suppliers?.[0] && buyerRequest) {
-      const firstSupplier = matchReportWithSuppliers.fullReport.suppliers[0];
-      const supplier = firstSupplier.supplierId;
-
-      // Category fit
-      if (
-        supplier?.category?.toLowerCase() ===
+      categoryFit =
+        supplier.category?.toLowerCase() ===
         buyerRequest.category?.toLowerCase()
-      ) {
-        categoryFit = "Perfect Match";
-      } else {
-        categoryFit = "Partial Match";
-      }
+          ? "Perfect Match"
+          : "Partial Match";
 
-      // Capability fit (check if supplier capabilities match request requirements/description)
       const requestText = `${buyerRequest.description} ${
         buyerRequest.requirements || ""
       }`.toLowerCase();
-      const supplierCapabilities = supplier?.capabilities || [];
-      const matchingCapabilities = supplierCapabilities.filter((cap) =>
+      const capabilities = supplier.capabilities || [];
+      const matchingCapabilities = capabilities.filter((cap) =>
         requestText.includes(cap.toLowerCase())
       );
-
       if (matchingCapabilities.length > 0) {
         capabilityFit = `${matchingCapabilities.length} Capabilities Match`;
-      } else if (supplierCapabilities.length > 0) {
+      } else if (capabilities.length > 0) {
         capabilityFit = "Capabilities Available";
       } else {
         capabilityFit = "Limited";
       }
-    }
+      return { categoryFit, capabilityFit };
+    };
+
+    // Build the top-2 preview supplier cards from the populated fullReport.
+    // We expose only safe display fields — name/contact stay locked behind
+    // the paywall.
+    const populatedTop = matchReportWithSuppliers?.fullReport?.suppliers || [];
+    const previewSuppliers = populatedTop.slice(0, 2).map((entry) => {
+      const supplier = entry.supplierId;
+      if (!supplier) return null;
+      const { categoryFit, capabilityFit } = buildFits(supplier);
+      return {
+        category: supplier.category,
+        subCategory: supplier.subCategory,
+        industry: supplier.industry,
+        stateRegion: supplier.stateRegion,
+        certifications: supplier.certifications,
+        lastVerifiedDate: supplier.lastVerifiedDate,
+        categoryFit,
+        capabilityFit,
+      };
+    }).filter(Boolean);
 
     // Return only preview data — strip all sensitive supplier fields
     res.json({
@@ -468,19 +490,22 @@ export const getPreview = async (req, res) => {
               requirements: buyerRequest.requirements,
             }
           : null,
-        // Include only safe display fields for the teaser supplier card
-        previewSupplier: matchReport.preview.previewSupplier
-          ? {
-              category: matchReport.preview.previewSupplier.category,
-              subCategory: matchReport.preview.previewSupplier.subCategory,
-              stateRegion: matchReport.preview.previewSupplier.stateRegion,
-              certifications:
-                matchReport.preview.previewSupplier.certifications,
-              lastVerifiedDate: matchReport.preview.previewSupplier.lastVerifiedDate,
-              categoryFit,
-              capabilityFit,
-            }
-          : null,
+        // Top-2 free preview supplier cards (was a single previewSupplier
+        // before — kept the legacy shape commented out for revert).
+        previewSuppliers,
+        // Legacy single-card payload — superseded by previewSuppliers above.
+        // previewSupplier: matchReport.preview.previewSupplier
+        //   ? {
+        //       category: matchReport.preview.previewSupplier.category,
+        //       subCategory: matchReport.preview.previewSupplier.subCategory,
+        //       stateRegion: matchReport.preview.previewSupplier.stateRegion,
+        //       certifications:
+        //         matchReport.preview.previewSupplier.certifications,
+        //       lastVerifiedDate: matchReport.preview.previewSupplier.lastVerifiedDate,
+        //       categoryFit,
+        //       capabilityFit,
+        //     }
+        //   : null,
       },
     });
   } catch (error) {
@@ -572,17 +597,24 @@ export const generateAIMatch = async (req, res) => {
 
     if (process.env.NODE_ENV === "development") {
       console.log(`\n${"─".repeat(60)}`);
-      console.log(`[HYBRID SCORING - POST PAYMENT] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${postPaymentSubCategory ? ` > ${postPaymentSubCategory}` : ""}`);
-      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (OpenAI AI + rule-based)`);
+      console.log(`[POST-PAYMENT MATCH] Request: "${buyerRequest.name}" | Category: ${buyerRequest.category}${postPaymentSubCategory ? ` > ${postPaymentSubCategory}` : ""}`);
+      console.log(`Scoring ${filteredSuppliers.length} category-matched suppliers (rule-based score + AI prose)`);
       console.log(`─────────────────────────────────────────────────────────`);
     }
 
-    const suppliersWithScores = await Promise.all(
-      filteredSuppliers.map(async (supplier) => {
-        const result = await calculateHybridScore(buyerRequest, supplier);
-        return { supplier, matchScore: result.score, factors: result.factors };
-      })
-    );
+    // Score with the unified rule-based scorer. The score will match the
+    // number the user already saw on the public preview.
+    const suppliersWithScores = filteredSuppliers.map((supplier) => {
+      const result = calculatePreviewScore(buyerRequest, supplier);
+      return { supplier, matchScore: result.score, factors: result.factors };
+    });
+
+    // Previously: const suppliersWithScores = await Promise.all(
+    //   filteredSuppliers.map(async (supplier) => {
+    //     const result = await calculateHybridScore(buyerRequest, supplier);
+    //     return { supplier, matchScore: result.score, factors: result.factors };
+    //   })
+    // );
 
     suppliersWithScores.sort((a, b) => b.matchScore - a.matchScore);
     const topSuppliers = suppliersWithScores.slice(0, 5);
@@ -594,7 +626,7 @@ export const generateAIMatch = async (req, res) => {
 
     if (process.env.NODE_ENV === "development") {
       console.log(`─────────────────────────────────────────────────────────`);
-      console.log(`[HYBRID RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
+      console.log(`[POST-PAYMENT RESULTS] Top ${topSuppliers.length} of ${filteredSuppliers.length} category-matched suppliers:`);
       topSuppliers.forEach((s, i) =>
         console.log(`  #${i + 1} ${s.supplier.name} — ${s.matchScore}/100`)
       );

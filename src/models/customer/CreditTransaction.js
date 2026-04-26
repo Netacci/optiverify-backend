@@ -63,7 +63,7 @@ const CreditTransactionSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 // Index for efficient queries
@@ -72,4 +72,3 @@ CreditTransactionSchema.index({ requestId: 1 });
 CreditTransactionSchema.index({ email: 1, createdAt: -1 });
 
 export default mongoose.model("CreditTransaction", CreditTransactionSchema);
-

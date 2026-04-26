@@ -950,6 +950,9 @@ export const resendVerification = async (req, res) => {
       await import("../../models/customer/ManagedService.js")
     ).default;
     const Payment = (await import("../../models/customer/Payment.js")).default;
+    const BuyerRequest = (
+      await import("../../models/customer/BuyerRequest.js")
+    ).default;
     const { generateToken: generateTokenService } = await import(
       "../../services/tokenService.js"
     );
@@ -968,7 +971,22 @@ export const resendVerification = async (req, res) => {
       status: "succeeded",
     }).sort({ createdAt: -1 });
 
-    let requestId = managedService?._id || payment?.requestId;
+    // Check for a buyer request. Important for the regular preview/paywall
+    // funnel where the BuyerRequest is created at form submit but the
+    // Payment record only lands when Stripe's webhook fires. Without this
+    // check, dev environments without `stripe listen` running (and prod
+    // races between checkout-completion and webhook arrival) silently drop
+    // the resend with no diagnostic — the user clicks "resend" and nothing
+    // happens. Including BuyerRequest closes that gap. This does NOT weaken
+    // the M-3 anti-enumeration property: an anonymous attacker probing a
+    // random email still can't tell whether a user *account* exists, only
+    // whether a form was submitted recently with that address.
+    const buyerRequest = await BuyerRequest.findOne({
+      email: userEmail,
+    }).sort({ createdAt: -1 });
+
+    let requestId =
+      managedService?._id || payment?.requestId || buyerRequest?._id;
     let planType = payment?.planType || "managed_service";
 
     // Generate token
@@ -979,10 +997,10 @@ export const resendVerification = async (req, res) => {
     );
 
     // Send email — but only when the user actually exists or there's a
-    // pending payment/managed-service for this address. Anonymous bursts
-    // against this endpoint will still get the generic OK with no email
-    // actually delivered.
-    if (user || managedService || payment) {
+    // pending payment / managed-service / buyer request for this address.
+    // Anonymous bursts against this endpoint with random emails still get
+    // the generic OK with no email actually delivered.
+    if (user || managedService || payment || buyerRequest) {
       if (
         payment ||
         (managedService && managedService.serviceFeeStatus === "paid")
@@ -1001,6 +1019,17 @@ export const resendVerification = async (req, res) => {
           isNewRequest: true,
         });
       }
+      console.log(
+        `[resendVerification] Sent verification email to ${userEmail} (user=${!!user}, managedService=${!!managedService}, payment=${!!payment}, buyerRequest=${!!buyerRequest})`
+      );
+    } else {
+      // Diagnostic-only — never reflected in the API response. If you're
+      // testing locally and seeing this line, no record matches that email
+      // yet (e.g. the Stripe webhook hasn't fired, or the buyer used a
+      // different address than they typed here).
+      console.warn(
+        `[resendVerification] No user/payment/managed-service/buyer-request found for ${userEmail} — send skipped (returning generic OK)`
+      );
     }
 
     return res.json(GENERIC_OK);

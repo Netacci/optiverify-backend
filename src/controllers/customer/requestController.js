@@ -40,40 +40,37 @@ function getClientIp(req) {
 // Create a new buyer request
 export const createRequest = async (req, res) => {
   try {
-    // M-14 — Honeypot check. Bots tend to fill every visible field; this
-    // input is hidden via offscreen CSS so a real user leaves it blank.
-    if (
-      typeof req.body?.website_url === "string" &&
-      req.body.website_url.trim() !== ""
-    ) {
-      console.warn(
-        `[createRequest][M-14] Honeypot tripped from ip=${getClientIp(req)} — silent-drop`
-      );
-      return res.status(200).json({ success: true });
-    }
 
-    // M-14 — Submission-window heuristic. Frontend stamps form_render_ts at
-    // mount time; <3s means scripted submission. Absent timestamp is also
-    // treated as bot (legitimate frontend always sends it).
-    const renderTs = Number(req.body?.form_render_ts);
     const now = Date.now();
-    if (!Number.isFinite(renderTs) || now - renderTs < 3000) {
-      console.warn(
-        `[createRequest][M-14] Submission-window heuristic tripped (renderTs=${req.body?.form_render_ts}, dt=${Number.isFinite(renderTs) ? now - renderTs : "n/a"}ms) from ip=${getClientIp(req)} — silent-drop`
-      );
-      return res.status(200).json({ success: true });
-    }
-
-    // M-14 — Per-IP creation cap for anonymous traffic. Authenticated users
-    // bypass — they're already gated by auth + the standard rate limiters.
     if (!req.user) {
+      // Honeypot check. Real users leave the offscreen field blank.
+      if (
+        typeof req.body?.website_url === "string" &&
+        req.body.website_url.trim() !== ""
+      ) {
+        console.warn(
+          `[createRequest][M-14] Honeypot tripped from ip=${getClientIp(req)} (anon) - silent-drop`
+        );
+        return res.status(200).json({ success: true });
+      }
+
+   
+      const renderTs = Number(req.body?.form_render_ts);
+      if (!Number.isFinite(renderTs) || now - renderTs < 3000) {
+        console.warn(
+          `[createRequest][M-14] Submission-window heuristic tripped (renderTs=${req.body?.form_render_ts}, dt=${Number.isFinite(renderTs) ? now - renderTs : "n/a"}ms) from ip=${getClientIp(req)} (anon) - silent-drop`
+        );
+        return res.status(200).json({ success: true });
+      }
+
+      // Per-IP creation cap.
       sweepExpiredAnonIpCounts(now);
       const ip = getClientIp(req);
       const entry = anonIpCreateCounts.get(ip);
       if (entry && entry.resetAt > now) {
         if (entry.count >= ANON_IP_CAP) {
           console.warn(
-            `[createRequest][M-14] Per-IP anon cap exceeded (${entry.count}/${ANON_IP_CAP}) from ip=${ip} — silent-drop`
+            `[createRequest][M-14] Per-IP anon cap exceeded (${entry.count}/${ANON_IP_CAP}) from ip=${ip} - silent-drop`
           );
           return res.status(200).json({ success: true });
         }

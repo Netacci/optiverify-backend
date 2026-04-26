@@ -524,6 +524,7 @@ export const getRequestDetails = async (req, res) => {
       const supplier = item.supplierId;
       return {
         // Identifiers
+        id: supplier._id?.toString(),
         supplierNumber: supplier.supplierNumber,
         // Basic
         name: supplier.name,

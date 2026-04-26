@@ -145,13 +145,10 @@ const contactLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, message: "Too many requests" },
 });
-const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: "Too many requests" },
-});
+// aiLimiter (5/min) lives inline in routes/customer/requests.js where it's
+// applied per-route to /:id/match and /:id/generate-match only. Mounting it
+// at the router root caused unrelated GETs (e.g. /:id/details) to share the
+// AI bucket and throttle real users.
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
@@ -207,12 +204,12 @@ app.get("/health", (req, res) => {
 
 // API Routes
 app.use("/api/upload", uploadRouter);
-// Plan ref: H-1 — aiLimiter applied at the router root for now. This is
-// broader than strictly necessary (it also rate-limits non-AI request
-// endpoints), but per the plan we avoid editing the requests router.
-// TODO(H-1 follow-up): move aiLimiter onto only `/:id/generate-match` and
-// `/:id/match` inside requests.js once that file is back in scope.
-app.use("/api/requests", aiLimiter, requestsRouter);
+// aiLimiter is applied PER-ROUTE inside requests.js (only
+// on /:id/match and /:id/generate-match, the actual AI fan-out endpoints).
+// At the router level we apply the generous generalLimiter so non-AI
+// endpoints (GET /:id/details, POST create, unlock) get a sane 300/15min
+// ceiling rather than sharing the AI bucket.
+app.use("/api/requests", generalLimiter, requestsRouter);
 app.use("/api/matches", matchesRouter);
 app.use("/api/payments", generalLimiter, paymentsRouter);
 app.use("/api/auth", authLimiter, authRouter);
