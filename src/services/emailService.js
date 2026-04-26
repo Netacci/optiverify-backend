@@ -76,13 +76,10 @@ function renderTransactionalEmail({
                   <tr>
                     <td align="left" valign="middle">
                       <a href="${FRONTEND_URL}" style="text-decoration:none;color:#111827;display:inline-block;">
-                        <img src="${EMAIL_LOGO_URL}" alt="${BRAND_NAME}" width="40" height="40" style="display:inline-block;vertical-align:middle;border-radius:8px;border:0;outline:none;text-decoration:none;">
-                        <span style="font-size:20px;font-weight:700;letter-spacing:-0.01em;vertical-align:middle;margin-left:10px;color:#111827;">${BRAND_NAME}</span>
+                        <img src="${EMAIL_LOGO_URL}" alt="${BRAND_NAME}" width="180" height="60" style="display:block;width:180px;height:60px;max-width:180px;border:0;outline:none;text-decoration:none;">
                       </a>
                     </td>
-                    <td align="right" valign="middle" style="font-size:12px;color:#6b7280;">
-                      ${BRAND_TAGLINE}
-                    </td>
+                  
                   </tr>
                 </table>
               </td>
