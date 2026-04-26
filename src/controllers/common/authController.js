@@ -801,9 +801,7 @@ export const login = async (req, res) => {
     user.failedLoginCount = 0;
     user.lockedUntil = undefined;
 
-    // M-12: silent bcrypt rehash. If the stored hash uses fewer rounds than
-    // the current target, re-hash by reassigning the plaintext (the pre-save
-    // hook handles the rest).
+  
     if (typeof user.needsRehash === "function" && user.needsRehash()) {
       user.password = password;
     }
@@ -816,8 +814,8 @@ export const login = async (req, res) => {
     // Generate JWT token (H-4: pass full user so tokenVersion is embedded)
     const token = generateToken(user);
 
-    // Set cookie
-    res.cookie("token", token, {
+
+    res.cookie("cd-token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
