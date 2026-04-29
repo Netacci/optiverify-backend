@@ -233,7 +233,11 @@ export const getSuppliers = async (req, res) => {
     }
 
     const [suppliers, total] = await Promise.all([
-      Supplier.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Supplier.find(query)
+        .collation({ locale: "en", strength: 2 })
+        .sort({ name: 1 })
+        .skip(skip)
+        .limit(limit),
       Supplier.countDocuments(query),
     ]);
 
