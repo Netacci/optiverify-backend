@@ -5,7 +5,7 @@ dotenv.config();
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "support@optiverifi.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3002";
 const CUSTOMER_DASHBOARD_URL =
   process.env.CUSTOMER_DASHBOARD_URL || "http://localhost:3004";
