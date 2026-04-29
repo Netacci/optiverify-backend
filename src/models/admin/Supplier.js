@@ -71,6 +71,18 @@ const SupplierSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    // Tags — free-form labels (e.g. Architecture, Design, Facilities) rendered
+  
+    tags: {
+      type: [String],
+      default: [],
+    },
+    // Short positioning statement
+    // (e.g. "Architecture firm supporting public-sector projects").
+    positioning: {
+      type: String,
+      trim: true,
+    },
     // Order & Capacity Information
     minOrderQuantity: {
       type: String,

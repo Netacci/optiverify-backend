@@ -546,6 +546,8 @@ export const getRequestDetails = async (req, res) => {
         // Products & Services
         capabilities: supplier.capabilities,
         description: supplier.description,
+        tags: supplier.tags,
+        positioning: supplier.positioning,
         // Order & Capacity
         minOrderQuantity: supplier.minOrderQuantity,
         leadTime: supplier.leadTime,

@@ -131,6 +131,8 @@ const SUPPLIER_USER_FIELDS = [
   "riskFlags",
   "dataSource",
   "reliability",
+  "tags",
+  "positioning",
 ];
 
 // Privileged fields require superAdmin. `lastVerifiedDate` is grouped here
@@ -330,6 +332,9 @@ export const createSupplier = async (req, res) => {
     }
     if (supplierData.capabilities && !Array.isArray(supplierData.capabilities)) {
       supplierData.capabilities = [];
+    }
+    if (supplierData.tags && !Array.isArray(supplierData.tags)) {
+      supplierData.tags = [];
     }
 
     // Auto-generate supplier number — NEVER accept from body.
@@ -650,6 +655,10 @@ export const bulkUploadSuppliers = async (req, res) => {
         capabilities: nr.primary_products_services
           ? nr.primary_products_services.toString().split(",").map((c) => c.trim()).filter((c) => c)
           : [],
+        tags: nr.tags
+          ? nr.tags.toString().split(",").map((t) => t.trim()).filter((t) => t)
+          : [],
+        positioning: nr.positioning ? nr.positioning.toString().trim() : "",
         minOrderQuantity: nr.min_order_quantity_moq
           ? nr.min_order_quantity_moq.toString().trim()
           : "",
