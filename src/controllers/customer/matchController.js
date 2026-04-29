@@ -432,13 +432,18 @@ export const getPreview = async (req, res) => {
       const requestText = `${buyerRequest.description} ${
         buyerRequest.requirements || ""
       }`.toLowerCase();
-      const capabilities = supplier.capabilities || [];
-      const matchingCapabilities = capabilities.filter((cap) =>
-        requestText.includes(cap.toLowerCase())
+      // Tags are a positioning signal alongside capabilities — fold them into
+      // the same fit calculation so a tag hit (e.g. "Architecture") counts.
+      const supplierKeywords = [
+        ...(supplier.capabilities || []),
+        ...(supplier.tags || []),
+      ];
+      const matchingKeywords = supplierKeywords.filter((kw) =>
+        requestText.includes(String(kw).toLowerCase())
       );
-      if (matchingCapabilities.length > 0) {
-        capabilityFit = `${matchingCapabilities.length} Capabilities Match`;
-      } else if (capabilities.length > 0) {
+      if (matchingKeywords.length > 0) {
+        capabilityFit = `${matchingKeywords.length} Capabilities Match`;
+      } else if (supplierKeywords.length > 0) {
         capabilityFit = "Capabilities Available";
       } else {
         capabilityFit = "Limited";

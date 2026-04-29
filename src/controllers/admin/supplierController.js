@@ -224,11 +224,18 @@ export const getSuppliers = async (req, res) => {
     if (stateRegion) query.stateRegion = stateRegion;
     if (isActive !== undefined) query.isActive = isActive === "true";
     if (search) {
+      // Search across identifying fields plus the matching corpus
+      // (capabilities + tags + positioning) so admins picking suppliers
+      // manually can find them by what they do, not just by name.
+      // $regex on a String[] field matches if any element matches.
       query.$or = [
         { name: { $regex: search, $options: "i" } },
         { category: { $regex: search, $options: "i" } },
         { supplierNumber: { $regex: search, $options: "i" } },
         { email: { $regex: search, $options: "i" } },
+        { capabilities: { $regex: search, $options: "i" } },
+        { tags: { $regex: search, $options: "i" } },
+        { positioning: { $regex: search, $options: "i" } },
       ];
     }
 
