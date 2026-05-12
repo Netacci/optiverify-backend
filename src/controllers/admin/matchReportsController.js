@@ -116,6 +116,10 @@ export const getMatchReportDetails = async (req, res) => {
     const matchReport = await MatchReport.findOne({ requestId: id })
       .populate("requestId")
       .populate("fullReport.suppliers.supplierId")
+      // Populate the new scoredSuppliers (matching redesign) — admin view
+      // shows ALL scored suppliers including below-threshold; this is the
+      // intentional escape hatch from MATCHING_REDESIGN_SPEC.md §5.5.
+      .populate("scoredSuppliers.supplierId")
       .populate("editedBy", "email");
 
     if (!matchReport) {

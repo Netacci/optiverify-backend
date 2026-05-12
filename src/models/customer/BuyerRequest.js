@@ -6,6 +6,7 @@ const BuyerRequestSchema = new mongoose.Schema(
       type: String,
       required: [true, "Name is required"],
       trim: true,
+      maxlength: [200, "Name must be 200 characters or less"],
     },
     category: {
       type: String,
@@ -37,18 +38,22 @@ const BuyerRequestSchema = new mongoose.Schema(
     description: {
       type: String,
       trim: true,
+      maxlength: [2000, "Description must be 2000 characters or less"],
     },
     timeline: {
       type: String,
       trim: true,
+      maxlength: [200, "Timeline must be 200 characters or less"],
     },
     location: {
       type: String,
       trim: true,
+      maxlength: [200, "Location must be 200 characters or less"],
     },
     requirements: {
       type: String,
       trim: true,
+      maxlength: [1000, "Requirements must be 1000 characters or less"],
     },
     email: {
       type: String,
@@ -74,4 +79,3 @@ const BuyerRequestSchema = new mongoose.Schema(
 );
 
 export default mongoose.model("BuyerRequest", BuyerRequestSchema);
-

@@ -4,6 +4,10 @@ import Payment from "../../models/customer/Payment.js";
 import User from "../../models/common/User.js";
 import CreditTransaction from "../../models/customer/CreditTransaction.js";
 import Stripe from "stripe";
+// Matching redesign: lazy-fire Call 2 (prose explanations) the first time
+// a paid buyer opens their report. Same helper used by getFullReport in
+// matchController — see MATCHING_REDESIGN_SPEC.md §5.4.
+import { maybeFireCall2 } from "./matchController.js";
 
 // Initialize Stripe only if valid key is provided
 const getStripeInstance = () => {
@@ -368,10 +372,11 @@ export const getRequestDetails = async (req, res) => {
       });
     }
 
-    // Get match report
-    const matchReport = await MatchReport.findOne({ requestId: id }).populate(
-      "fullReport.suppliers.supplierId"
-    );
+    // Get match report — also populate scoredSuppliers.supplierId so the
+    // lazy Call 2 fire below can read the populated Supplier docs.
+    const matchReport = await MatchReport.findOne({ requestId: id })
+      .populate("fullReport.suppliers.supplierId")
+      .populate("scoredSuppliers.supplierId");
 
     // If no match report exists, return request data with pending status
     // This happens when request was created on homepage but matching hasn't been processed yet
@@ -402,12 +407,57 @@ export const getRequestDetails = async (req, res) => {
       });
     }
 
+    // Matching redesign: no_matches status means AI scored everyone but
+    // nothing cleared the threshold. Return a dedicated state so the frontend
+    // can render the managed-services CTA without going through the payment
+    // flow. See MATCHING_REDESIGN_SPEC.md.
+    if (matchReport.status === "no_matches") {
+      return res.json({
+        success: true,
+        data: {
+          request: {
+            id: request._id,
+            name: request.name,
+            category: request.category || matchReport.preview?.category,
+            description: request.description || matchReport.preview?.summary,
+            unitPrice: request.unitPrice,
+            totalAmount: request.totalAmount,
+            quantity: request.quantity,
+            timeline: request.timeline,
+            location: request.location,
+            requirements: request.requirements,
+            status: request.status,
+            matchedCount: 0,
+            matchScore: 0,
+            createdAt: request.createdAt,
+            updatedAt: request.updatedAt,
+          },
+          suppliers: [],
+          isLocked: false,
+          status: "no_matches",
+          matchReportStatus: "no_matches",
+          requestSummary: matchReport.requestSummary || null,
+          suggestedAction: "managed_services",
+          generatedAt: matchReport.fullReport?.generatedAt,
+        },
+      });
+    }
+
     // Check access:
     // 1. If report is completed (AI matching done)
     // 2. OR if report is unlocked (after payment, waiting for AI matching)
     // 3. OR if payment exists (legacy/fallback)
-    let hasAccess = matchReport.status === "completed";
-    let isUnlocked = matchReport.status === "unlocked";
+    //
+    // Matching redesign: when AI Call 1 already scored the report (status
+    // 'completed' / 'paid' / 'unlocked' with scoringMeta.call1.method === 'ai'),
+    // the matches are already in scoredSuppliers / fullReport.suppliers. We
+    // grant hasAccess immediately and skip the legacy "still unlocked, needs
+    // generate-match" branch — Call 2 (prose) fires lazily below.
+    const wasAiScored = matchReport.scoringMeta?.call1?.method === "ai";
+    let hasAccess =
+      matchReport.status === "completed" ||
+      (wasAiScored && ["paid", "unlocked"].includes(matchReport.status));
+    let isUnlocked = matchReport.status === "unlocked" && !wasAiScored;
     let isPending = matchReport.status === "pending";
 
     if (!hasAccess) {
@@ -519,9 +569,43 @@ export const getRequestDetails = async (req, res) => {
       });
     }
 
-    // Format suppliers with all available fields
-    const suppliers = matchReport.fullReport.suppliers.map((item) => {
+    // Matching redesign: lazy-fire Call 2 here so the customer frontend
+    // doesn't need a separate /generate-match call. If the report was
+    // AI-scored at Call 1, the buyer has paid, and prose hasn't been
+    // generated yet, this fires Call 2 synchronously and persists. No-op
+    // for legacy rule-based reports or reports that already have prose.
+    try {
+      await maybeFireCall2(matchReport);
+    } catch (err) {
+      console.error("[dashboard] lazy Call 2 fire failed:", err.message);
+      // Continue — Call 2 fallback to template explanations happens inside
+      // maybeFireCall2; even if THAT fails, we still return the matchReport
+      // data with whatever prose is currently there.
+    }
+
+    // Format suppliers with all available fields.
+    // Lookup AI scoring metadata from scoredSuppliers (matching redesign).
+    // Legacy rule-based reports won't have scoredSuppliers — fields fall back.
+    const detailScoredById = new Map();
+    for (const s of matchReport.scoredSuppliers || []) {
+      const sid = s.supplierId?._id
+        ? s.supplierId._id.toString()
+        : s.supplierId?.toString();
+      if (sid) detailScoredById.set(sid, s);
+    }
+    // Defense-in-depth: filter below-threshold suppliers from customer
+    // response (MATCHING_REDESIGN_SPEC.md §5.4). 80 matches the threshold
+    // used at scoring time in matchController.
+    const _threshold = parseInt(
+      process.env.MATCH_THRESHOLD_DEFAULT || "80",
+      10
+    );
+    const suppliers = matchReport.fullReport.suppliers
+      .filter((item) => (item?.matchScore ?? 0) >= _threshold)
+      .map((item) => {
       const supplier = item.supplierId;
+      const sid = supplier?._id ? supplier._id.toString() : null;
+      const scored = sid ? detailScoredById.get(sid) : null;
       return {
         // Identifiers
         id: supplier._id?.toString(),
@@ -566,6 +650,11 @@ export const getRequestDetails = async (req, res) => {
         // Match data
         matchScore: item.matchScore,
         ranking: item.ranking,
+        // AI matching fields (matching redesign — null on legacy reports)
+        fitScore: scored?.fitScore ?? item.matchScore ?? null,
+        reason: scored?.reason ?? null,
+        meetsMoq: scored?.meetsMoq ?? null,
+        meetsCompliance: scored?.meetsCompliance ?? null,
         whyTheyMatch: item.whyTheyMatch,
         aiExplanation: item.aiExplanation,
         strengths: item.strengths || [],
