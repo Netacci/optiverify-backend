@@ -602,9 +602,10 @@ export const getRequestDetails = async (req, res) => {
     );
     const suppliers = matchReport.fullReport.suppliers
       .filter((item) => (item?.matchScore ?? 0) >= _threshold)
+      .filter((item) => item?.supplierId)
       .map((item) => {
       const supplier = item.supplierId;
-      const sid = supplier?._id ? supplier._id.toString() : null;
+      const sid = supplier._id ? supplier._id.toString() : null;
       const scored = sid ? detailScoredById.get(sid) : null;
       return {
         // Identifiers
