@@ -1,4 +1,5 @@
 import Feedback from "../../models/customer/Feedback.js";
+import { sendFeedbackNotificationEmail } from "../../services/emailService.js";
 
 /**
  * Submit feedback
@@ -49,6 +50,24 @@ export const submitFeedback = async (req, res) => {
       subject,
       message,
       rating: rating ? parseInt(rating) : undefined,
+    });
+
+    // Notify support — non-blocking so a Resend outage doesn't fail submission.
+    sendFeedbackNotificationEmail({
+      customerEmail: user.email,
+      type,
+      subject,
+      message,
+      rating: feedback.rating,
+      requestId: feedback.requestId?.toString(),
+      matchingServiceId: feedback.matchingServiceId?.toString(),
+      transactionId: feedback.transactionId,
+      feedbackId: feedback._id?.toString(),
+    }).catch((err) => {
+      console.error(
+        "[feedback] notification email failed (non-fatal):",
+        err.message,
+      );
     });
 
     res.status(201).json({

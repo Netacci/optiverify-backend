@@ -1036,3 +1036,112 @@ export const sendContactEmail = async ({
     throw error;
   }
 };
+
+/**
+ * Send feedback notification email to support when a customer submits feedback.
+ * replyTo is set to the customer's email so support can respond directly from
+ * their inbox. All user-controlled fields are HTML-escaped before interpolation.
+ */
+export const sendFeedbackNotificationEmail = async ({
+  customerEmail,
+  type,
+  subject,
+  message,
+  rating,
+  requestId,
+  matchingServiceId,
+  transactionId,
+  feedbackId,
+}) => {
+  try {
+    const typeLabels = {
+      request: "Match Request",
+      matching_service: "Managed Service",
+      billing: "Billing",
+      general: "General",
+    };
+
+    const MESSAGE_CAP = 5000;
+    const rawMessage = String(message ?? "");
+    const cappedMessage =
+      rawMessage.length > MESSAGE_CAP
+        ? rawMessage.slice(0, MESSAGE_CAP) + "…[truncated]"
+        : rawMessage;
+
+    const safeEmail = escapeHtml(customerEmail);
+    const safeSubject = escapeHtml(subject);
+    const safeTypeLabel = escapeHtml(typeLabels[type] || type || "");
+    const safeMessage = escapeHtml(cappedMessage);
+    const safeRating = rating != null ? escapeHtml(String(rating)) : null;
+    const safeRequestId = escapeHtml(requestId);
+    const safeServiceId = escapeHtml(matchingServiceId);
+    const safeTransactionId = escapeHtml(transactionId);
+    const safeFeedbackId = escapeHtml(feedbackId);
+
+    const row = (label, value) =>
+      value
+        ? `<tr style="border-top: 1px solid #e5e7eb;">
+             <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%; vertical-align: top;">${label}</td>
+             <td style="padding: 8px 0; font-size: 14px; color: #111827;">${value}</td>
+           </tr>`
+        : "";
+
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: FROM_EMAIL,
+      replyTo: customerEmail,
+      subject: `New feedback (${typeLabels[type] || type}): ${subject}`,
+      html: renderTransactionalEmail({
+        preheader: `New ${typeLabels[type] || type} feedback from ${customerEmail}.`,
+        heading: "New customer feedback",
+        intro: `A customer submitted feedback. Reply to this email to respond to them directly.`,
+        bodyHtml: `
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin: 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <table style="width:100%;border-collapse:collapse;">
+                  <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; width: 40%;">From</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #111827;">
+                      <a href="mailto:${safeEmail}" style="color: ${BRAND_PRIMARY}; text-decoration: none;">${safeEmail}</a>
+                    </td>
+                  </tr>
+                  ${row("Type", safeTypeLabel)}
+                  ${row("Subject", safeSubject)}
+                  ${safeRating ? row("Rating", `${safeRating} / 10`) : ""}
+                  ${row("Request ID", safeRequestId)}
+                  ${row("Managed Service ID", safeServiceId)}
+                  ${row("Transaction ID", safeTransactionId)}
+                  ${row("Feedback ID", safeFeedbackId)}
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <p style="margin: 24px 0 8px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.05em;">Message</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#f9fafb;border-radius:8px;border-left:3px solid ${BRAND_PRIMARY};margin: 0 0 24px 0;">
+            <tr>
+              <td style="padding: 16px 20px;">
+                <p style="margin: 0; font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-wrap;">${safeMessage}</p>
+              </td>
+            </tr>
+          </table>
+        `,
+        footerNote: `Internal notification. Reply directly to respond to the customer.`,
+      }),
+    });
+
+    if (error) {
+      console.error("Resend error (feedback notification):", error);
+      throw error;
+    }
+
+    console.log(
+      `✅ Feedback notification email sent to ${FROM_EMAIL} from ${customerEmail}`,
+    );
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error sending feedback notification email:", error);
+    throw error;
+  }
+};
