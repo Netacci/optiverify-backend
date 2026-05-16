@@ -26,7 +26,11 @@ dotenv.config();
 // ========== CONSTANTS ==========
 
 const MODEL = "gpt-4o-mini";
-const CALL_TIMEOUT_MS = 30000;
+// Bumped from 30s — batched scoring with the verbose rubric + 13+ candidates
+// can take 25-40s on busy OpenAI servers. Retries below give us 2 more shots.
+const CALL_TIMEOUT_MS = 45000;
+const RETRY_ATTEMPTS = 3; // total attempts including the first (so 2 retries)
+const RETRY_BASE_DELAY_MS = 1000; // exponential: 1s, 2s
 
 // gpt-4o-mini pricing as of January 2026 (USD per 1M tokens).
 // Update when OpenAI pricing changes.
@@ -48,6 +52,47 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   timeout: CALL_TIMEOUT_MS,
 });
+
+// ========== RETRY HELPER ==========
+// Wraps an async OpenAI call with transient-error retry. Logs each attempt
+// so we can see "Call 1 attempt 2/3 succeeded after timeout" in dev.
+
+function isRetryableError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  // AbortError from AbortSignal.timeout — most common transient (the
+  // "Request was aborted" log line that surfaced this bug)
+  if (msg.includes("aborted") || msg.includes("timeout")) return true;
+  // Network blips
+  if (msg.includes("econnreset") || msg.includes("etimedout") || msg.includes("enotfound")) return true;
+  // OpenAI 5xx and 429 (rate limit) — transient server-side
+  const status = err?.status ?? err?.response?.status;
+  if (typeof status === "number" && (status === 429 || (status >= 500 && status < 600))) return true;
+  return false;
+}
+
+async function withRetry(fn, label) {
+  let lastErr;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const retryable = isRetryableError(err);
+      const willRetry = retryable && attempt < RETRY_ATTEMPTS;
+      if (isDev || !willRetry) {
+        const tag = willRetry ? "WARN" : "ERROR";
+        console[willRetry ? "warn" : "error"](
+          `[aiScoring] ${tag} ${label} attempt ${attempt}/${RETRY_ATTEMPTS} failed: ${err.message}${willRetry ? " — retrying" : ""}`
+        );
+      }
+      if (!willRetry) throw err;
+      const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  // Unreachable, but TS-style guard
+  throw lastErr;
+}
 
 // ========== SANITIZATION ==========
 // sanitizeForPrompt is imported from aiService.js — single source of truth.
@@ -335,26 +380,33 @@ ${JSON.stringify(candidates, null, 2)}
     );
   }
 
-  const completion = await client.chat.completions.create(
-    {
-      model: MODEL,
-      temperature: 0,
-      seed,
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system", content: CALL1_SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "scoring_response",
-          strict: true,
-          schema: CALL1_RESPONSE_SCHEMA,
+  // Each attempt gets a fresh AbortSignal so timeouts don't bleed across
+  // retries. Transient errors (timeout / 5xx / 429) retry per withRetry;
+  // permanent errors (bad request, validation, etc.) throw immediately.
+  const completion = await withRetry(
+    () =>
+      client.chat.completions.create(
+        {
+          model: MODEL,
+          temperature: 0,
+          seed,
+          max_tokens: maxTokens,
+          messages: [
+            { role: "system", content: CALL1_SYSTEM_PROMPT },
+            { role: "user", content: userMessage },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "scoring_response",
+              strict: true,
+              schema: CALL1_RESPONSE_SCHEMA,
+            },
+          },
         },
-      },
-    },
-    { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }
+        { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }
+      ),
+    "Call 1"
   );
 
   const raw = completion.choices?.[0]?.message?.content;
@@ -517,26 +569,30 @@ ${JSON.stringify(matched, null, 2)}
     );
   }
 
-  const completion = await client.chat.completions.create(
-    {
-      model: MODEL,
-      temperature: 0.2,
-      seed,
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system", content: CALL2_SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "explanations_response",
-          strict: true,
-          schema: CALL2_RESPONSE_SCHEMA,
+  const completion = await withRetry(
+    () =>
+      client.chat.completions.create(
+        {
+          model: MODEL,
+          temperature: 0.2,
+          seed,
+          max_tokens: maxTokens,
+          messages: [
+            { role: "system", content: CALL2_SYSTEM_PROMPT },
+            { role: "user", content: userMessage },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "explanations_response",
+              strict: true,
+              schema: CALL2_RESPONSE_SCHEMA,
+            },
+          },
         },
-      },
-    },
-    { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }
+        { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }
+      ),
+    "Call 2"
   );
 
   const raw = completion.choices?.[0]?.message?.content;

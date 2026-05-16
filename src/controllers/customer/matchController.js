@@ -1084,40 +1084,45 @@ async function processMatchingAi(req, res) {
       );
     }
 
-    // Cost cap check
+    // Cost cap check — hard cap means we cannot use AI for the rest of
+    // the day. Surface as a failure (NOT silent rule-based fallback —
+    // rule-based has the 85-point floor bug we set out to fix).
     const capCheck = await checkCostCap();
-    let aiResult = null;
-    let usedFallback = false;
-
     if (capCheck.status === "hard") {
-      if (isDevMatchAi) {
-        console.log(
-          `[AI MATCH] Hard cost cap exceeded ($${capCheck.dailyTotal.toFixed(2)}), falling back to rule-based`
-        );
-      }
-      usedFallback = true;
-    } else {
-      try {
-        aiResult = await scoreCandidatesBatch(
-          buyerRequest,
-          filteredSuppliers
-        );
-      } catch (err) {
-        console.error(
-          `[AI MATCH] Call 1 failed, falling back to rule-based:`,
-          err.message
-        );
-        usedFallback = true;
-      }
-    }
-
-    if (usedFallback) {
-      return runRuleBasedFallback(
+      console.warn(
+        `[AI MATCH] Hard cost cap exceeded ($${capCheck.dailyTotal.toFixed(2)}); returning failed status`
+      );
+      return persistFailedMatchReport(
         req,
         res,
         buyerRequest,
-        filteredSuppliers,
-        matchReport
+        matchReport,
+        "cost_cap_exceeded",
+        `Daily AI spending cap reached ($${capCheck.dailyTotal.toFixed(2)}).`,
+        filteredSuppliers.length
+      );
+    }
+
+    // Try Call 1 with internal retries (scoreCandidatesBatch wraps the
+    // OpenAI call in withRetry). If it still fails after retries, surface
+    // as failed — do NOT fall through to rule-based scoring, which would
+    // return misleading 85+ floor scores for irrelevant suppliers.
+    let aiResult = null;
+    try {
+      aiResult = await scoreCandidatesBatch(buyerRequest, filteredSuppliers);
+    } catch (err) {
+      console.error(
+        `[AI MATCH] Call 1 failed after retries — returning failed status:`,
+        err.message
+      );
+      return persistFailedMatchReport(
+        req,
+        res,
+        buyerRequest,
+        matchReport,
+        "ai_unavailable",
+        err.message,
+        filteredSuppliers.length
       );
     }
 
@@ -1481,9 +1486,89 @@ async function doMaybeFireCall2(matchReport) {
 }
 
 /**
- * Rule-based fallback used when AI Call 1 fails or the hard cost cap is
- * tripped. Persists scoredSuppliers with scoringMethod="ai_fallback_rule"
- * so admins can identify reports for later re-scoring.
+ * Persist a failed match report and return a clean failure response.
+ *
+ * Used when:
+ *  - AI Call 1 throws after exhausting retries (transient errors give up,
+ *    or permanent errors like 4xx from OpenAI)
+ *  - Daily hard cost cap has been tripped
+ *
+ * IMPORTANT: We deliberately do NOT silently fall back to rule-based
+ * scoring here. Rule-based has the 85-point floor bug we set out to fix —
+ * returning misleading 91-98 scores for irrelevant suppliers is worse for
+ * the buyer than an honest failure. The frontend renders this as an error
+ * state with a Retry button that re-triggers processMatchingAi.
+ *
+ * reasonCode: 'ai_unavailable' | 'cost_cap_exceeded'
+ * reasonMessage: human-readable error from the underlying failure
+ */
+async function persistFailedMatchReport(
+  req,
+  res,
+  buyerRequest,
+  matchReport,
+  reasonCode,
+  reasonMessage,
+  candidateCount
+) {
+  const summary = `Matching couldn't be completed for ${buyerRequest.name || "this request"}.`;
+  const failureData = {
+    status: "failed",
+    requestSummary: summary.substring(0, 240),
+    scoredSuppliers: [],
+    scoringMeta: {
+      call1: {
+        method: "rule_fallback", // sentinel — schema only allows "ai" | "rule_fallback"
+        scoredAt: new Date(),
+        candidateCount: candidateCount ?? 0,
+        thresholdUsed: MATCH_THRESHOLD,
+      },
+    },
+    preview: {
+      summary: summary.substring(0, 200),
+      category: buyerRequest.category,
+      matchedCount: 0,
+      matchScore: 0,
+    },
+    fullReport: { suppliers: [], generatedAt: new Date() },
+  };
+
+  if (!matchReport) {
+    matchReport = new MatchReport({
+      requestId: req.params.id,
+      email: buyerRequest.email,
+      ...failureData,
+    });
+  } else {
+    Object.assign(matchReport, failureData);
+  }
+  await matchReport.save();
+
+  // 503 (Service Unavailable) for AI/cost-cap failures so the frontend can
+  // treat it as a retryable error rather than a permanent one.
+  return res.status(503).json({
+    success: false,
+    message: "We couldn't generate matches right now. Please retry shortly.",
+    data: {
+      requestId: req.params.id,
+      matchReportId: matchReport._id,
+      status: "failed",
+      failureReason: reasonCode,
+      failureDetail:
+        process.env.NODE_ENV === "development" ? reasonMessage : undefined,
+      candidateCount: candidateCount ?? 0,
+      suggestedAction: "retry",
+    },
+  });
+}
+
+/**
+ * Rule-based fallback (LEGACY — no longer wired into processMatchingAi).
+ *
+ * Retained for back-compat with the non-AI legacy path (MATCH_SCORER=rule)
+ * and for admin-triggered re-scoring tools. The new AI path now uses
+ * persistFailedMatchReport instead, because rule-based scoring's 85-point
+ * floor produces misleading "great match" scores for irrelevant suppliers.
  */
 async function runRuleBasedFallback(
   req,

@@ -407,6 +407,42 @@ export const getRequestDetails = async (req, res) => {
       });
     }
 
+    // Matching redesign: failed status means AI Call 1 errored after retries
+    // (or hard cost cap was tripped). Return a dedicated state so the frontend
+    // can render an error UI with a Retry button (which re-triggers
+    // /generate-match → processMatchingAi). NOT the same as no_matches —
+    // matching wasn't completed, vs completed-with-zero-matches.
+    if (matchReport.status === "failed") {
+      return res.json({
+        success: true,
+        data: {
+          request: {
+            id: request._id,
+            name: request.name,
+            category: request.category || matchReport.preview?.category,
+            description: request.description || matchReport.preview?.summary,
+            unitPrice: request.unitPrice,
+            totalAmount: request.totalAmount,
+            quantity: request.quantity,
+            timeline: request.timeline,
+            location: request.location,
+            requirements: request.requirements,
+            status: request.status,
+            matchedCount: 0,
+            matchScore: 0,
+            createdAt: request.createdAt,
+            updatedAt: request.updatedAt,
+          },
+          suppliers: [],
+          isLocked: false,
+          status: "failed",
+          matchReportStatus: "failed",
+          suggestedAction: "retry",
+          generatedAt: matchReport.fullReport?.generatedAt,
+        },
+      });
+    }
+
     // Matching redesign: no_matches status means AI scored everyone but
     // nothing cleared the threshold. Return a dedicated state so the frontend
     // can render the managed-services CTA without going through the payment
