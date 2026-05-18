@@ -238,17 +238,14 @@ export const initiateRequest = async (req, res) => {
       });
     }
 
-    // Get category to find grade
+    // Look up the category to find its grade. If the customer typed a custom
+    // "Other" category that isn't in our catalog, fall through with grade
+    // "default" so pricing still works.
     const categoryDoc = await Category.findOne({
       name: userFields.category,
       isActive: true,
     });
-    if (!categoryDoc) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid category selected",
-      });
-    }
+    const categoryGrade = categoryDoc?.grade || "default";
 
     // Get settings for pricing calculation
     let settings = await SystemSettings.findOne({ key: "pricing_config" });
@@ -262,7 +259,7 @@ export const initiateRequest = async (req, res) => {
     // Calculate price based on category grade and urgency. Server is the only
     // source of truth for serviceFeeAmount; never read it from req.body.
     const priceCalculation = calculateManagedServicePrice(
-      categoryDoc.grade,
+      categoryGrade,
       userFields.urgency,
       settings
     );
@@ -510,17 +507,14 @@ export const initiatePublicRequest = async (req, res) => {
       });
     }
 
-    // Get category to find grade
+    // Look up the category to find its grade. If the customer typed a custom
+    // "Other" category that isn't in our catalog, fall through with grade
+    // "default" so pricing still works.
     const categoryDoc = await Category.findOne({
       name: userFields.category,
       isActive: true,
     });
-    if (!categoryDoc) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid category selected",
-      });
-    }
+    const categoryGrade = categoryDoc?.grade || "default";
 
     // Get settings for pricing calculation
     let settings = await SystemSettings.findOne({ key: "pricing_config" });
@@ -533,7 +527,7 @@ export const initiatePublicRequest = async (req, res) => {
 
     // Calculate price based on category grade and urgency. Server-derived only.
     const priceCalculation = calculateManagedServicePrice(
-      categoryDoc.grade,
+      categoryGrade,
       userFields.urgency,
       settings
     );
